@@ -222,6 +222,11 @@ export function frameDifference(
   return sum / n / 255;
 }
 
+/** Soft gain so typical arm contrast (~0.15–0.25) maps into mid/high display range; blank stays near 0. */
+function displayCurve(x: number, gain = 3.4): number {
+  return clamp01(1 - Math.exp(-gain * Math.max(0, x)));
+}
+
 export function metricsToDisplayScores(
   raw: RawMetrics,
   stability: number,
@@ -232,13 +237,11 @@ export function metricsToDisplayScores(
   frameStability: number;
   imageConfidence: number;
 } {
-  const veinVisibility = Math.round(
-    100 * clamp01(raw.localContrast * 0.55 + raw.lineStructure * 0.45),
-  );
-  const patternDetail = Math.round(
-    100 * clamp01(raw.lineStructure * 0.6 + raw.edgeEnergy * 0.4),
-  );
-  const colourSignature = Math.round(100 * clamp01(raw.chromaticStrength));
+  const visibilityProxy = raw.localContrast * 0.55 + raw.lineStructure * 0.45;
+  const patternProxy = raw.lineStructure * 0.55 + raw.edgeEnergy * 0.45;
+  const veinVisibility = Math.round(100 * displayCurve(visibilityProxy, 3.6));
+  const patternDetail = Math.round(100 * displayCurve(patternProxy, 3.5));
+  const colourSignature = Math.round(100 * displayCurve(raw.chromaticStrength * 0.55, 2.8));
   const frameStability = Math.round(100 * clamp01(stability));
   const exposureFactor = raw.exposureOk ? 1 : raw.underExposed || raw.overExposed ? 0.35 : 0.6;
   const imageConfidence = Math.round(

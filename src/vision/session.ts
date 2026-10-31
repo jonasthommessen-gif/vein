@@ -228,17 +228,17 @@ export class AnalysisSession {
     if (raw.exposureOk) this.exposureOkCount += 1;
     if (raw.exposureOk && this.exposureOkCount >= 3) this.gates[0].met = true;
 
-    if (this.gates[0].met && scores.veinVisibility >= 18 && raw.localContrast > 0.08) {
+    if (this.gates[0].met && scores.veinVisibility >= 28 && raw.localContrast > 0.06) {
       this.contrastOkCount += 1;
       if (this.contrastOkCount >= 4) this.gates[1].met = true;
     }
 
-    if (this.gates[1].met && scores.patternDetail >= 15) {
+    if (this.gates[1].met && scores.patternDetail >= 22) {
       this.patternStableCount += 1;
       if (this.patternStableCount >= 5) this.gates[2].met = true;
     }
 
-    if (this.gates[2].met && scores.colourSignature >= 10) {
+    if (this.gates[2].met && scores.colourSignature >= 18) {
       this.colourStableCount += 1;
       if (this.colourStableCount >= 4) this.gates[3].met = true;
     }
