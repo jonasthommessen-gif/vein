@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 import type { VeinProfile } from '../types';
 import {
@@ -13,13 +13,25 @@ interface Props {
 }
 
 export function LibraryScreen({ onBack, onOpen }: Props) {
-  const [tick, setTick] = useState(0);
-  const profiles = useMemo(() => listProfiles(), [tick]);
+  const [profiles, setProfiles] = useState<VeinProfile[]>([]);
+  const [loading, setLoading] = useState(true);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  const refresh = () => setTick((t) => t + 1);
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const list = await listProfiles();
+      setProfiles(list);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
 
   return (
     <div className="page">
@@ -31,7 +43,9 @@ export function LibraryScreen({ onBack, onOpen }: Props) {
 
       <h1 className="library-title">Saved profiles</h1>
 
-      {profiles.length === 0 ? (
+      {loading ? (
+        <p className="library-empty">Loading…</p>
+      ) : profiles.length === 0 ? (
         <p className="library-empty">No saved profiles yet. Complete an analysis and tap Save.</p>
       ) : (
         <ul className="library-list">
@@ -48,6 +62,15 @@ export function LibraryScreen({ onBack, onOpen }: Props) {
                   className="library-item"
                   onClick={() => onOpen(p)}
                 >
+                  {p.captureImage ? (
+                    <img
+                      className="library-thumb"
+                      src={p.captureImage}
+                      alt=""
+                      width={48}
+                      height={48}
+                    />
+                  ) : null}
                   <div className="library-item-body">
                     <p className="library-item-title">{p.label}</p>
                     <p className="library-item-meta">
@@ -94,9 +117,10 @@ export function LibraryScreen({ onBack, onOpen }: Props) {
                       <button
                         type="button"
                         onClick={() => {
-                          renameProfile(p.id, renameValue);
-                          setRenamingId(null);
-                          refresh();
+                          void renameProfile(p.id, renameValue).then(() => {
+                            setRenamingId(null);
+                            void refresh();
+                          });
                         }}
                       >
                         Save name
@@ -114,9 +138,10 @@ export function LibraryScreen({ onBack, onOpen }: Props) {
                       type="button"
                       className="danger"
                       onClick={() => {
-                        deleteProfile(p.id);
-                        setConfirmDeleteId(null);
-                        refresh();
+                        void deleteProfile(p.id).then(() => {
+                          setConfirmDeleteId(null);
+                          void refresh();
+                        });
                       }}
                     >
                       Confirm delete

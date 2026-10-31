@@ -2,11 +2,12 @@ import type {
   FeatureScores,
   FeatureVector,
   ProfileScores,
+  RadarValues,
   ToneLabel,
   VeinProfile,
 } from '../types';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function clamp(n: number, lo = 0, hi = 1): number {
   return Math.max(lo, Math.min(hi, n));
@@ -18,7 +19,6 @@ export function roundTo5(n: number): number {
 }
 
 function toneLabel(warmth: number, C: number): ToneLabel {
-  // Prefer chromatic warmth; fall back to C bands per spec
   if (C < 0.35) return warmth < 0.45 ? 'cool' : 'neutral';
   if (C < 0.65) return warmth < 0.4 ? 'cool' : warmth > 0.6 ? 'warm' : 'neutral';
   return warmth > 0.55 ? 'warm' : 'neutral';
@@ -35,7 +35,9 @@ export function classFromFeatures(V: number, P: number, C: number): string {
 
 function scoresFromVector(fv: FeatureVector): ProfileScores {
   const { V, P, C, S, Q } = fv;
-  const desirability = roundTo5(100 * clamp(0.34 * V + 0.22 * P + 0.16 * C + 0.18 * S + 0.1 * Q));
+  const desirability = roundTo5(
+    100 * clamp(0.34 * V + 0.22 * P + 0.16 * C + 0.18 * S + 0.1 * Q),
+  );
   const richness = roundTo5(100 * clamp(0.5 * V + 0.3 * C + 0.2 * P));
   const rarity = roundTo5(100 * clamp(0.65 * P + 0.2 * C + 0.15 * V));
   const elegance = roundTo5(100 * clamp(0.5 * S + 0.3 * V + 0.2 * P));
@@ -43,11 +45,25 @@ function scoresFromVector(fv: FeatureVector): ProfileScores {
   const complexity = roundTo5(100 * clamp(0.7 * P + 0.3 * V));
   const tone = roundTo5(100 * clamp(C));
   const consistency = roundTo5(100 * clamp(S));
-  const nocturnal = roundTo5(100 * clamp(0.4 * elegance / 100 + 0.35 * richness / 100 + 0.25 * S));
-  const aftertaste = roundTo5(100 * clamp(0.45 * richness / 100 + 0.35 * P + 0.2 * C));
+  const nocturnal = roundTo5(
+    100 * clamp(0.4 * (elegance / 100) + 0.35 * (richness / 100) + 0.25 * S),
+  );
+  const aftertaste = roundTo5(
+    100 * clamp(0.45 * (richness / 100) + 0.35 * P + 0.2 * C),
+  );
   const finish = roundTo5(100 * clamp(0.5 * S + 0.3 * V + 0.2 * C));
-  const temperament = roundTo5(100 * clamp(0.4 * elegance / 100 + 0.35 * S + 0.25 * (1 - Math.abs(C - 0.5) * 2)));
-  const occasion = roundTo5(100 * clamp(0.45 * desirability / 100 + 0.3 * rarity / 100 + 0.25 * elegance / 100));
+  const temperament = roundTo5(
+    100 *
+      clamp(
+        0.4 * (elegance / 100) + 0.35 * S + 0.25 * (1 - Math.abs(C - 0.5) * 2),
+      ),
+  );
+  const occasion = roundTo5(
+    100 *
+      clamp(
+        0.45 * (desirability / 100) + 0.3 * (rarity / 100) + 0.25 * (elegance / 100),
+      ),
+  );
 
   return {
     desirability,
@@ -66,7 +82,22 @@ function scoresFromVector(fv: FeatureVector): ProfileScores {
   };
 }
 
-function verdictText(desirability: number, rarity: number): { verdict: string; descriptor: string } {
+/** Radar axes — Clarity, Complexity, Tonal richness, Consistency, Rarity, Nocturnal. */
+export function radarFromScores(scores: ProfileScores): RadarValues {
+  return {
+    clarity: scores.clarity,
+    complexity: scores.complexity,
+    tonalRichness: scores.tone,
+    consistency: scores.consistency,
+    rarity: scores.rarity,
+    nocturnal: scores.nocturnal,
+  };
+}
+
+function verdictText(
+  desirability: number,
+  rarity: number,
+): { verdict: string; descriptor: string } {
   let verdict: string;
   if (desirability >= 85) verdict = 'A remarkably refined selection.';
   else if (desirability >= 65) verdict = 'Balanced and easy to appreciate.';
@@ -78,6 +109,42 @@ function verdictText(desirability: number, rarity: number): { verdict: string; d
   else descriptor = 'An understated, classic profile.';
 
   return { verdict, descriptor };
+}
+
+function assessmentText(scores: ProfileScores, tone: ToneLabel): string {
+  if (scores.desirability >= 85 && scores.rarity >= 70) {
+    return `Unusually composed ${tone} profile — distinct structure, quiet sweetness, exceptional aftertaste.`;
+  }
+  if (scores.desirability >= 70) {
+    return `A composed ${tone} reading with clear structure and a measured finish.`;
+  }
+  if (scores.complexity >= 70) {
+    return `Intricate ${tone} character; rewards a patient, unhurried approach.`;
+  }
+  return `A reserved ${tone} profile — understated, serviceable, without unnecessary drama.`;
+}
+
+/** Dry vampire tasting notes from deterministic rules. */
+function tastingNotesFrom(scores: ProfileScores, fv: FeatureVector, tone: ToneLabel): string[] {
+  const notes: string[] = [];
+
+  if (scores.richness >= 80) notes.push('Full-bodied with a lasting finish.');
+  else if (scores.richness >= 55) notes.push('Medium body; clean mid-palate.');
+  else notes.push('Light, restrained, quietly elegant.');
+
+  if (tone === 'cool') notes.push('A cool mineral edge. Best appreciated after dusk.');
+  else if (tone === 'warm') notes.push('Soft warmth on the finish. Suits formal occasions.');
+  else notes.push('Neutral temperament. Low drama; excellent for formal occasions.');
+
+  if (scores.rarity >= 75) notes.push('An uncommon arrangement. A patient acquisition is advised.');
+  else if (scores.consistency >= 70) notes.push('Remarkably steady. Ideal for unhurried evenings.');
+  else notes.push('Allow the selection to settle before serving.');
+
+  if (scores.nocturnal >= 70) notes.push('Particularly suited to nocturnal dining.');
+  else if (fv.S < 0.55) notes.push('Best approached with patience.');
+  else notes.push('A clean finish. Best after dusk.');
+
+  return [...new Set(notes)].slice(0, 4);
 }
 
 function recommendationsFrom(scores: ProfileScores, fv: FeatureVector): string[] {
@@ -97,7 +164,6 @@ function recommendationsFrom(scores: ProfileScores, fv: FeatureVector): string[]
   else if (scores.consistency < 55) out.push('Allow the selection to settle.');
   else out.push('Best after dusk.');
 
-  // Deduplicate while preserving order; keep 3
   const unique = [...new Set(out)];
   return unique.slice(0, 3);
 }
@@ -130,6 +196,7 @@ export function buildProfile(opts: {
   label?: string;
   id?: string;
   createdAt?: string;
+  captureImage?: string | null;
 }): VeinProfile {
   const fv = opts.featureVector;
   const scores = scoresFromVector(fv);
@@ -138,6 +205,9 @@ export function buildProfile(opts: {
   const { verdict, descriptor } = verdictText(scores.desirability, scores.rarity);
   const recommendations = recommendationsFrom(scores, fv);
   const measured = { ...opts.measured };
+  const radar = radarFromScores(scores);
+  const tastingNotes = tastingNotesFrom(scores, fv, tone);
+  const assessment = assessmentText(scores, tone);
 
   return {
     id: opts.id ?? `vp_${Date.now().toString(36)}_${Math.floor(fv.V * 1000)}`,
@@ -147,15 +217,19 @@ export function buildProfile(opts: {
     quality: measured.imageConfidence,
     classCode,
     scores,
+    radar,
     toneLabel: tone,
     verdict,
     descriptor,
+    assessment,
+    tastingNotes,
     why: whyText(measured, scores, tone),
     recommendations,
     palateNotes: palateNotes(scores, tone),
     limitedConfidence: Boolean(opts.limitedConfidence),
     schemaVersion: SCHEMA_VERSION,
     measured,
+    captureImage: opts.captureImage ?? null,
   };
 }
 

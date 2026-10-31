@@ -1,5 +1,5 @@
 export type AppPhase =
-  | 'INTRO'
+  | 'PREVIEW'
   | 'REQUESTING_PERMISSION'
   | 'CAMERA_READY'
   | 'CAMERA_ERROR'
@@ -12,24 +12,61 @@ export type AppPhase =
   | 'LIBRARY';
 
 export type ScanStage =
-  | 'balancing_exposure'
-  | 'assessing_visibility'
+  | 'calibrating_exposure'
+  | 'identifying_structures'
   | 'mapping_patterns'
-  | 'reading_colour'
-  | 'checking_consistency'
-  | 'building_profile';
+  | 'sampling_colour'
+  | 'verifying_consistency'
+  | 'analysis_complete';
+
+export interface TargetSuitability {
+  exposure: number;
+  chromaVariance: number;
+  localContrast: number;
+  lineStructure: number;
+  score: number;
+  suitable: boolean;
+}
+
+export interface VeinPoint {
+  x: number;
+  y: number;
+  strength: number;
+}
+
+export interface VeinSegment {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  strength: number;
+}
+
+export interface VeinGeometry {
+  points: VeinPoint[];
+  segments: VeinSegment[];
+  sampleWidth: number;
+  sampleHeight: number;
+  roiX: number;
+  roiY: number;
+  roiW: number;
+  roiH: number;
+}
 
 export interface RawMetrics {
   meanLuminance: number;
   luminanceSpread: number;
   localContrast: number;
   lineStructure: number;
+  chromaVariance: number;
   chromaticWarmth: number;
   chromaticStrength: number;
   edgeEnergy: number;
   exposureOk: boolean;
   underExposed: boolean;
   overExposed: boolean;
+  targetSuitability: TargetSuitability;
+  geometry: VeinGeometry;
 }
 
 export interface FeatureScores {
@@ -65,6 +102,16 @@ export interface ProfileScores {
   occasion: number;
 }
 
+/** Six-axis radar — never medical biomarkers. */
+export interface RadarValues {
+  clarity: number;
+  complexity: number;
+  tonalRichness: number;
+  consistency: number;
+  rarity: number;
+  nocturnal: number;
+}
+
 export type ToneLabel = 'cool' | 'neutral' | 'warm';
 
 export interface VeinProfile {
@@ -75,21 +122,28 @@ export interface VeinProfile {
   quality: number;
   classCode: string;
   scores: ProfileScores;
+  radar: RadarValues;
   toneLabel: ToneLabel;
   verdict: string;
   descriptor: string;
+  assessment: string;
+  tastingNotes: string[];
   why: string;
   recommendations: string[];
   palateNotes: Record<string, string>;
   limitedConfidence: boolean;
   schemaVersion: number;
   measured: FeatureScores;
+  /** Compressed JPEG/WebP data URL of the capture still. */
+  captureImage?: string | null;
 }
 
 export type GuidanceHint =
   | 'hold_steady'
   | 'better_light'
   | 'find_vein'
+  | 'move_closer'
+  | 'even_light'
   | 'too_dark'
   | 'too_bright'
   | null;
