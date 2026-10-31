@@ -32,8 +32,8 @@ function sampleToDisplay(
 }
 
 /**
- * Computational visualization overlay — spatial clusters, math readouts,
- * and ephemeral detail. Driven only by measured session data.
+ * Computational visualization overlay — organic ice/cyan ridge polylines,
+ * junction nodes, math HUD. Driven only by measured session geometry.
  */
 export function VeinOverlay({ geometry, computation, analyzing, complete }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -88,14 +88,20 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
       const comp = compRef.current;
       const phase = comp?.phase ?? (isDone ? 'completion' : 'acquisition');
 
-      // —— B. Math viz (compact, over-camera, no cards) ——
+      // —— Math viz (compact, over-camera, no cards) ——
       if (comp && (phase === 'analysis' || phase === 'verification' || phase === 'completion')) {
         drawMathHud(ctx, comp, dw, phase === 'completion' ? 0.55 : 0.85);
       } else if (comp && phase === 'acquisition') {
         drawCalibration(ctx, dw, dh, comp, 0.5);
       }
 
-      if (!geom || geom.points.length === 0) {
+      const hasRidge =
+        geom &&
+        ((geom.polylines?.length ?? 0) > 0 ||
+          geom.segments.length > 0 ||
+          geom.points.length > 0);
+
+      if (!hasRidge || !geom) {
         if (comp?.signature && phase === 'completion') {
           drawSignature(ctx, comp.signature, dw, dh, 0.7);
         }
@@ -106,79 +112,124 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
       const sh = geom.sampleHeight || 240;
       const ice = '216, 234, 244';
 
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-
-      // —— A. Spatial features (subtle local clusters) ——
-      const showSegments =
+      const showPaths =
         phase === 'extraction' ||
         phase === 'analysis' ||
         phase === 'verification' ||
         phase === 'completion';
-      const showOri =
-        phase === 'extraction' || phase === 'analysis' || phase === 'verification';
       const quiet = phase === 'verification' || phase === 'completion';
+      const bloomScale = quiet ? 0.72 : 1;
 
-      if (showSegments) {
-        ctx.lineCap = 'round';
-        for (const s of geom.segments) {
-          if (s.length > 10) continue;
-          if (quiet && s.strength < 0.4) continue;
-          const a = sampleToDisplay(s.x0, s.y0, sw, sh, dw, dh);
-          const b = sampleToDisplay(s.x1, s.y1, sw, sh, dw, dh);
-          const alpha = quiet ? 0.28 * s.strength : 0.38 * s.strength;
-          ctx.beginPath();
-          ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.35})`;
-          ctx.lineWidth = 1.6;
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
-          ctx.lineWidth = 0.9;
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      if (showPaths) {
+        const polylines = geom.polylines ?? [];
+        if (polylines.length > 0) {
+          for (const pl of polylines) {
+            if (pl.points.length < 2) continue;
+            if (quiet && pl.stability < 0.35) continue;
+            const alpha =
+              (quiet ? 0.42 : 0.58) * pl.strength * pl.stability * bloomScale;
+            const trunk = 0.9 + pl.weight * 2.4;
+
+            // Soft subsurface bloom pass
+            ctx.beginPath();
+            for (let i = 0; i < pl.points.length; i++) {
+              const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
+              if (i === 0) ctx.moveTo(p.x, p.y);
+              else ctx.lineTo(p.x, p.y);
+            }
+            ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.28})`;
+            ctx.lineWidth = trunk * 2.6;
+            ctx.stroke();
+
+            // Core ice stroke
+            ctx.beginPath();
+            for (let i = 0; i < pl.points.length; i++) {
+              const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
+              if (i === 0) ctx.moveTo(p.x, p.y);
+              else ctx.lineTo(p.x, p.y);
+            }
+            ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.85})`;
+            ctx.lineWidth = trunk;
+            ctx.stroke();
+
+            // Thin white centreline
+            ctx.beginPath();
+            for (let i = 0; i < pl.points.length; i++) {
+              const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
+              if (i === 0) ctx.moveTo(p.x, p.y);
+              else ctx.lineTo(p.x, p.y);
+            }
+            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.55})`;
+            ctx.lineWidth = Math.max(0.55, trunk * 0.28);
+            ctx.stroke();
+          }
+        } else {
+          // Fallback: short segments if polylines not yet available
+          for (const s of geom.segments) {
+            if (quiet && s.strength < 0.35) continue;
+            const a = sampleToDisplay(s.x0, s.y0, sw, sh, dw, dh);
+            const b = sampleToDisplay(s.x1, s.y1, sw, sh, dw, dh);
+            const wt = s.weight ?? 0.5;
+            const alpha = (quiet ? 0.32 : 0.48) * s.strength;
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.4})`;
+            ctx.lineWidth = 1.4 + wt * 1.8;
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+            ctx.lineWidth = 0.7 + wt * 0.5;
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
         }
       }
 
-      for (const p of geom.points) {
-        if (quiet && !p.accepted && p.strength < 0.42) continue;
-        const { x, y } = sampleToDisplay(p.x, p.y, sw, sh, dw, dh);
-        const alpha =
-          phase === 'acquisition'
-            ? 0.25 + 0.3 * p.strength
-            : phase === 'completion'
-              ? 0.4 * p.strength
-              : p.accepted
-                ? 0.55 * p.strength
-                : 0.32 * p.strength;
+      // Junction / branch nodes — white cores with soft ice bloom
+      const junctions = geom.junctions ?? [];
+      if (showPaths && junctions.length > 0) {
+        for (const j of junctions) {
+          if (quiet && j.strength < 0.32) continue;
+          const { x, y } = sampleToDisplay(j.x, j.y, sw, sh, dw, dh);
+          const r = j.degree >= 3 ? 2.4 : 1.6;
+          const a = (quiet ? 0.5 : 0.7) * j.strength * bloomScale;
 
-        ctx.beginPath();
-        ctx.fillStyle = `rgba(${ice}, ${alpha * 0.2})`;
-        ctx.arc(x, y, quiet ? 1.6 : 2.1, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
-        ctx.arc(x, y, p.accepted ? 1.15 : 0.9, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Orientation ticks near features
-        if (showOri && p.orientation != null) {
-          const len = 4.5;
-          const tx = Math.cos(p.orientation) * len;
-          const ty = Math.sin(p.orientation) * len;
           ctx.beginPath();
-          ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.55})`;
-          ctx.lineWidth = 0.7;
-          ctx.moveTo(x - tx, y - ty);
-          ctx.lineTo(x + tx, y + ty);
-          ctx.stroke();
+          ctx.fillStyle = `rgba(${ice}, ${a * 0.35})`;
+          ctx.arc(x, y, r * 2.2, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
+          ctx.arc(x, y, r * 0.85, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (showPaths) {
+        // Sparse accepted ridge samples as soft nodes (no silhouette chain look)
+        for (const p of geom.points) {
+          if (!p.accepted && p.strength < 0.5) continue;
+          if (quiet && !p.accepted) continue;
+          const { x, y } = sampleToDisplay(p.x, p.y, sw, sh, dw, dh);
+          const a = 0.4 * p.strength;
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(${ice}, ${a * 0.25})`;
+          ctx.arc(x, y, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
+          ctx.arc(x, y, 0.85, 0, Math.PI * 2);
+          ctx.fill();
         }
       }
 
-      // —— D. Computational detail ——
+      // —— Computational detail labels ——
       if (
         comp &&
         (phase === 'analysis' || phase === 'verification') &&
@@ -229,7 +280,6 @@ function drawCalibration(
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = 'rgba(216, 234, 244, 0.35)';
   ctx.lineWidth = 0.8;
-  // Sparse calibration ticks — not a scan rectangle
   for (let i = 0; i < 4; i++) {
     const ang = (i / 4) * Math.PI * 2 + comp.contrast * 2;
     const r = 28 + i * 2;
@@ -253,7 +303,6 @@ function drawMathHud(
   ctx.globalAlpha = alpha;
   ctx.globalCompositeOperation = 'source-over';
 
-  // Tiny luminance histogram
   const hist = comp.luminanceHist;
   const hw = 52;
   const hh = 18;
@@ -267,7 +316,6 @@ function drawMathHud(
   ctx.lineWidth = 0.6;
   ctx.strokeRect(x0, y0, hw, hh);
 
-  // Stabilization sparkline
   const histY = y0 + hh + 10;
   const spark = comp.stabilityHistory;
   if (spark.length > 1) {
@@ -283,7 +331,6 @@ function drawMathHud(
     ctx.stroke();
   }
 
-  // Tiny density / contrast / confidence readouts
   ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
   ctx.fillStyle = 'rgba(230, 236, 240, 0.7)';
   const ty = histY + 28;
@@ -291,7 +338,6 @@ function drawMathHud(
   ctx.fillText(`κ ${(comp.contrast * 100).toFixed(0)}`, x0 + 36, ty);
   ctx.fillText(`ĉ ${(comp.confidence * 100).toFixed(0)}`, x0, ty + 12);
 
-  // Right-edge subtle mark so HUD doesn't collide with bars
   void dw;
   ctx.restore();
 }

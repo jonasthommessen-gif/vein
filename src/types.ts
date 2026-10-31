@@ -58,13 +58,38 @@ export interface VeinSegment {
   x1: number;
   y1: number;
   strength: number;
-  /** Euclidean length in sample pixels — kept short for local clusters. */
+  /** Euclidean length in sample pixels. */
   length: number;
+  /** Relative stroke weight 0–1 (trunk vs branch). */
+  weight: number;
+}
+
+/** Ordered ridge centreline — may branch via shared endpoints / junctions. */
+export interface VeinPolyline {
+  /** Sample-space vertices along the ridge. */
+  points: Array<{ x: number; y: number }>;
+  strength: number;
+  /** Relative stroke weight 0–1 (thicker trunk / thinner branch). */
+  weight: number;
+  /** Fade 0–1 for unstable / low-evidence paths. */
+  stability: number;
+}
+
+export interface VeinJunction {
+  x: number;
+  y: number;
+  strength: number;
+  /** Number of incident ridge branches (3+ = true junction). */
+  degree: number;
 }
 
 export interface VeinGeometry {
   points: VeinPoint[];
   segments: VeinSegment[];
+  /** Branching ridge polylines following vein centrelines (preferred for draw). */
+  polylines: VeinPolyline[];
+  /** White junction nodes where ridges meet / branch. */
+  junctions: VeinJunction[];
   sampleWidth: number;
   sampleHeight: number;
   roiX: number;

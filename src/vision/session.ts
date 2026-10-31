@@ -286,9 +286,12 @@ export class AnalysisSession {
       imageConfidence: Math.round(this.smoothed.imageConfidence),
     };
 
+    const ridgeCount =
+      (raw.geometry.polylines?.length ?? 0) +
+      Math.floor(raw.geometry.points.length / 2);
     if (
       usable &&
-      raw.geometry.points.length >= 3 &&
+      ridgeCount >= 2 &&
       raw.lineStructure >= 0.12 &&
       raw.organicScore >= 0.22
     ) {
@@ -443,7 +446,13 @@ export class AnalysisSession {
 
   private mergeGeometry(raw: VeinGeometry, usable: boolean): VeinGeometry {
     if (!usable && this.acceptedPoints.size === 0) {
-      return { ...raw, points: [], segments: [] };
+      return {
+        ...raw,
+        points: [],
+        segments: [],
+        polylines: [],
+        junctions: [],
+      };
     }
 
     const accepted: VeinPoint[] = [];
@@ -456,12 +465,37 @@ export class AnalysisSession {
         ? accepted
         : raw.points.map((p) => ({ ...p, accepted: false }));
 
-    const segs = raw.segments.filter((s) => s.length <= 10).slice(0, 18);
+    // Prefer temporally confirmed points to fade unstable polyline segments
+    const acceptedSet = new Set(
+      accepted.filter((p) => p.accepted).map((p) => `${Math.round(p.x / 4)}:${Math.round(p.y / 4)}`),
+    );
+    const polylines = (raw.polylines ?? []).map((pl) => {
+      let hits = 0;
+      for (const pt of pl.points) {
+        const key = `${Math.round(pt.x / 4)}:${Math.round(pt.y / 4)}`;
+        if (acceptedSet.has(key)) hits += 1;
+      }
+      const confirm =
+        pl.points.length === 0 ? 0 : hits / Math.min(pl.points.length, 6);
+      const stability = clamp01(
+        pl.stability * (accepted.length >= 3 ? 0.55 + 0.45 * confirm : 0.75),
+      );
+      return { ...pl, stability };
+    });
+
+    // Keep branching ridge segments (no short-only silhouette filter)
+    const segs = (raw.segments ?? [])
+      .filter((s) => s.strength >= 0.22)
+      .slice(0, 48);
 
     return {
       ...raw,
-      points: phasePts.slice(0, 32),
+      points: phasePts.slice(0, 40),
       segments: segs,
+      polylines: polylines
+        .filter((pl) => pl.stability >= 0.28 && pl.points.length >= 2)
+        .slice(0, 18),
+      junctions: (raw.junctions ?? []).slice(0, 22),
       signature: raw.signature,
     };
   }
@@ -495,7 +529,9 @@ export class AnalysisSession {
     raw: RawMetrics,
     geometry: VeinGeometry,
   ): ComputationViz {
-    const density = clamp01(geometry.points.length / 24);
+    const density = clamp01(
+      ((geometry.polylines?.length ?? 0) * 2 + geometry.points.length) / 28,
+    );
     return {
       phase: stageToPhase(stage, complete),
       luminanceHist: this.lastHist.length ? this.lastHist : raw.luminanceHist,
