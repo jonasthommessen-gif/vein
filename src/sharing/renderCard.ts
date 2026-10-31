@@ -164,8 +164,8 @@ export async function renderProfileCard(profile: VeinProfile): Promise<Blob> {
   ctx.fillStyle = '#949CA1';
   ctx.font = '400 18px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
   ctx.textAlign = 'left';
-  ctx.fillText('VEIN / fictional visual profile', margin, H - 56);
-  ctx.fillText('Based on visible image characteristics', margin, H - 30);
+  ctx.fillText('VEIN / fictional party profile', margin, H - 56);
+  ctx.fillText('Based on visible image characteristics · not medical', margin, H - 30);
 
   if (profile.limitedConfidence) {
     ctx.fillStyle = '#667077';

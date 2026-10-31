@@ -10,7 +10,9 @@ import type {
   ScanStage,
   TargetSuitability,
   VeinGeometry,
+  VeinJunction,
   VeinPoint,
+  VeinPolyline,
 } from '../types';
 import {
   computeRawMetrics,
@@ -28,6 +30,69 @@ const MIN_VALID_MS = 7_000;
 const IDEAL_VALID_MS = 9_000;
 /** Soft ceiling — once gates + this much valid time, never block. */
 const MAX_VALID_MS = 10_000;
+/** Frames of ridge evidence before a centreline is held through completion. */
+const POLY_VERIFY_HITS = 3;
+
+interface HeldPolyline {
+  points: Array<{ x: number; y: number }>;
+  strength: number;
+  weight: number;
+  hits: number;
+  miss: number;
+  cx: number;
+  cy: number;
+}
+
+interface HeldJunction {
+  x: number;
+  y: number;
+  strength: number;
+  degree: number;
+  angles: number[];
+  hits: number;
+  miss: number;
+}
+
+function polylineCentroid(pts: Array<{ x: number; y: number }>): { cx: number; cy: number } {
+  let sx = 0;
+  let sy = 0;
+  for (const p of pts) {
+    sx += p.x;
+    sy += p.y;
+  }
+  const n = Math.max(1, pts.length);
+  return { cx: sx / n, cy: sy / n };
+}
+
+function blendPolylinePoints(
+  prev: Array<{ x: number; y: number }>,
+  next: Array<{ x: number; y: number }>,
+  alpha: number,
+): Array<{ x: number; y: number }> {
+  if (prev.length < 2) return next.map((p) => ({ ...p }));
+  if (next.length < 2) return prev.map((p) => ({ ...p }));
+  // Resample both onto shared count for smooth updates
+  const n = Math.max(prev.length, next.length);
+  const sample = (src: Array<{ x: number; y: number }>, t: number) => {
+    const f = t * (src.length - 1);
+    const i = Math.floor(f);
+    const u = f - i;
+    const a = src[Math.min(i, src.length - 1)];
+    const b = src[Math.min(i + 1, src.length - 1)];
+    return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u };
+  };
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0 : i / (n - 1);
+    const a = sample(prev, t);
+    const b = sample(next, t);
+    out.push({
+      x: a.x * (1 - alpha) + b.x * alpha,
+      y: a.y * (1 - alpha) + b.y * alpha,
+    });
+  }
+  return out;
+}
 
 function clamp(n: number, lo = 0, hi = 100): number {
   return Math.max(lo, Math.min(hi, n));
@@ -135,6 +200,8 @@ export class AnalysisSession {
     imageConfidence: false,
   };
   private acceptedPoints = new Map<string, { hits: number; point: VeinPoint }>();
+  private heldPolylines: HeldPolyline[] = [];
+  private heldJunctions: HeldJunction[] = [];
   private ephemeralSamples: ComputationSample[] = [];
   private lastHist: number[] = new Array(12).fill(0);
   private frozenGeometry: VeinGeometry | null = null;
@@ -187,6 +254,8 @@ export class AnalysisSession {
       imageConfidence: false,
     };
     this.acceptedPoints.clear();
+    this.heldPolylines = [];
+    this.heldJunctions = [];
     this.ephemeralSamples = [];
     this.lastHist = new Array(12).fill(0);
     this.frozenGeometry = null;
@@ -430,22 +499,132 @@ export class AnalysisSession {
         prev.point = {
           ...p,
           strength: Math.max(prev.point.strength, p.strength),
-          accepted: prev.hits >= 3,
+          accepted: prev.hits >= POLY_VERIFY_HITS,
         };
       } else if (this.acceptedPoints.size < 48) {
         this.acceptedPoints.set(key, { hits: 1, point: { ...p, accepted: false } });
       }
     }
     for (const [k, v] of this.acceptedPoints) {
-      if (v.hits < 3) {
-        v.hits -= 0.15;
+      if (v.hits < POLY_VERIFY_HITS) {
+        v.hits -= 0.12;
         if (v.hits <= 0) this.acceptedPoints.delete(k);
+      }
+    }
+
+    // Accumulate continuous ridge centrelines — once verified, hold through completion
+    const MATCH_R = 18;
+    const MATCH_R2 = MATCH_R * MATCH_R;
+    const matchedHeld = new Set<number>();
+    for (const pl of geom.polylines ?? []) {
+      if (pl.points.length < 2) continue;
+      const { cx, cy } = polylineCentroid(pl.points);
+      let best = -1;
+      let bestD = MATCH_R2;
+      for (let i = 0; i < this.heldPolylines.length; i++) {
+        if (matchedHeld.has(i)) continue;
+        const h = this.heldPolylines[i];
+        const d = (h.cx - cx) ** 2 + (h.cy - cy) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      if (best >= 0) {
+        matchedHeld.add(best);
+        const h = this.heldPolylines[best];
+        const blend = h.hits >= POLY_VERIFY_HITS ? 0.28 : 0.45;
+        h.points = blendPolylinePoints(h.points, pl.points, blend);
+        h.strength = h.strength * 0.7 + pl.strength * 0.3;
+        h.weight = Math.max(h.weight, pl.weight);
+        h.hits += 1;
+        h.miss = 0;
+        const c = polylineCentroid(h.points);
+        h.cx = c.cx;
+        h.cy = c.cy;
+      } else if (this.heldPolylines.length < 20) {
+        this.heldPolylines.push({
+          points: pl.points.map((p) => ({ ...p })),
+          strength: pl.strength,
+          weight: pl.weight,
+          hits: 1,
+          miss: 0,
+          cx,
+          cy,
+        });
+      }
+    }
+    for (let i = this.heldPolylines.length - 1; i >= 0; i--) {
+      if (matchedHeld.has(i)) continue;
+      const h = this.heldPolylines[i];
+      // Verified trunks persist; unverified decay quickly
+      if (h.hits >= POLY_VERIFY_HITS) {
+        h.miss += 1;
+        if (h.miss > 28) this.heldPolylines.splice(i, 1);
+      } else {
+        h.miss += 1;
+        h.hits -= 0.35;
+        if (h.miss > 4 || h.hits <= 0) this.heldPolylines.splice(i, 1);
+      }
+    }
+
+    const J_MATCH = 14 * 14;
+    const matchedJ = new Set<number>();
+    for (const j of geom.junctions ?? []) {
+      let best = -1;
+      let bestD = J_MATCH;
+      for (let i = 0; i < this.heldJunctions.length; i++) {
+        if (matchedJ.has(i)) continue;
+        const h = this.heldJunctions[i];
+        const d = (h.x - j.x) ** 2 + (h.y - j.y) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      if (best >= 0) {
+        matchedJ.add(best);
+        const h = this.heldJunctions[best];
+        const a = h.hits >= POLY_VERIFY_HITS ? 0.25 : 0.4;
+        h.x = h.x * (1 - a) + j.x * a;
+        h.y = h.y * (1 - a) + j.y * a;
+        h.strength = Math.max(h.strength, j.strength);
+        h.degree = Math.max(h.degree, j.degree);
+        if (j.angles?.length) h.angles = j.angles;
+        h.hits += 1;
+        h.miss = 0;
+      } else if (this.heldJunctions.length < 24) {
+        this.heldJunctions.push({
+          x: j.x,
+          y: j.y,
+          strength: j.strength,
+          degree: j.degree,
+          angles: j.angles ? [...j.angles] : [],
+          hits: 1,
+          miss: 0,
+        });
+      }
+    }
+    for (let i = this.heldJunctions.length - 1; i >= 0; i--) {
+      if (matchedJ.has(i)) continue;
+      const h = this.heldJunctions[i];
+      if (h.hits >= POLY_VERIFY_HITS) {
+        h.miss += 1;
+        if (h.miss > 28) this.heldJunctions.splice(i, 1);
+      } else {
+        h.miss += 1;
+        if (h.miss > 4) this.heldJunctions.splice(i, 1);
       }
     }
   }
 
   private mergeGeometry(raw: VeinGeometry, usable: boolean): VeinGeometry {
-    if (!usable && this.acceptedPoints.size === 0) {
+    const hasHeld =
+      this.heldPolylines.length > 0 ||
+      this.acceptedPoints.size > 0 ||
+      this.heldJunctions.length > 0;
+
+    if (!usable && !hasHeld) {
       return {
         ...raw,
         points: [],
@@ -457,45 +636,79 @@ export class AnalysisSession {
 
     const accepted: VeinPoint[] = [];
     for (const v of this.acceptedPoints.values()) {
-      accepted.push({ ...v.point, accepted: v.hits >= 3 });
+      accepted.push({ ...v.point, accepted: v.hits >= POLY_VERIFY_HITS });
     }
 
+    // Prefer held verified centrelines; fall back to live ridges while building evidence
+    const heldPl: VeinPolyline[] = this.heldPolylines
+      .filter((h) => h.points.length >= 2)
+      .map((h) => {
+        const verified = h.hits >= POLY_VERIFY_HITS;
+        return {
+          points: h.points.map((p) => ({ ...p })),
+          strength: Math.max(h.strength, verified ? 0.55 : h.strength),
+          weight: h.weight,
+          // Verified lines stay fully opaque through completion — no flicker fade
+          stability: verified
+            ? 1
+            : clamp01(0.45 + 0.4 * (h.hits / POLY_VERIFY_HITS)),
+        };
+      })
+      .sort((a, b) => b.stability * b.strength - a.stability * a.strength)
+      .slice(0, 16);
+
+    const liveFallback =
+      heldPl.length >= 2
+        ? []
+        : (raw.polylines ?? [])
+            .filter((pl) => pl.points.length >= 2 && pl.strength >= 0.28)
+            .map((pl) => ({
+              ...pl,
+              points: pl.points.map((p) => ({ ...p })),
+              stability: clamp01(pl.stability * 0.85),
+            }))
+            .slice(0, 10);
+
+    const polylines = heldPl.length > 0 ? heldPl : liveFallback;
+
+    const heldJ: VeinJunction[] = this.heldJunctions
+      .filter((h) => h.hits >= 2 || h.degree >= 3)
+      .map((h) => ({
+        x: h.x,
+        y: h.y,
+        strength: Math.max(h.strength, h.hits >= POLY_VERIFY_HITS ? 0.6 : h.strength),
+        degree: h.degree,
+        angles: h.angles.length ? h.angles : undefined,
+      }))
+      .slice(0, 20);
+
+    const junctions =
+      heldJ.length > 0 ? heldJ : (raw.junctions ?? []).slice(0, 16);
+
+    // Junction markers only — no sparse ephemeral dots as the primary viz
+    const junctionPts: VeinPoint[] = junctions.map((j) => ({
+      x: j.x,
+      y: j.y,
+      strength: j.strength,
+      orientation: j.angles?.[0] ?? 0,
+      localContrast: j.strength,
+      accepted: true,
+    }));
     const phasePts =
-      accepted.length >= 3
-        ? accepted
-        : raw.points.map((p) => ({ ...p, accepted: false }));
+      junctionPts.length > 0
+        ? junctionPts
+        : accepted.filter((p) => p.accepted).slice(0, 12);
 
-    // Prefer temporally confirmed points to fade unstable polyline segments
-    const acceptedSet = new Set(
-      accepted.filter((p) => p.accepted).map((p) => `${Math.round(p.x / 4)}:${Math.round(p.y / 4)}`),
-    );
-    const polylines = (raw.polylines ?? []).map((pl) => {
-      let hits = 0;
-      for (const pt of pl.points) {
-        const key = `${Math.round(pt.x / 4)}:${Math.round(pt.y / 4)}`;
-        if (acceptedSet.has(key)) hits += 1;
-      }
-      const confirm =
-        pl.points.length === 0 ? 0 : hits / Math.min(pl.points.length, 6);
-      const stability = clamp01(
-        pl.stability * (accepted.length >= 3 ? 0.55 + 0.45 * confirm : 0.75),
-      );
-      return { ...pl, stability };
-    });
-
-    // Keep branching ridge segments (no short-only silhouette filter)
     const segs = (raw.segments ?? [])
-      .filter((s) => s.strength >= 0.22)
-      .slice(0, 48);
+      .filter((s) => s.strength >= 0.28)
+      .slice(0, 32);
 
     return {
       ...raw,
-      points: phasePts.slice(0, 40),
-      segments: segs,
-      polylines: polylines
-        .filter((pl) => pl.stability >= 0.28 && pl.points.length >= 2)
-        .slice(0, 18),
-      junctions: (raw.junctions ?? []).slice(0, 22),
+      points: phasePts.slice(0, 24),
+      segments: polylines.length > 0 ? [] : segs,
+      polylines: polylines.slice(0, 16),
+      junctions: junctions.slice(0, 20),
       signature: raw.signature,
     };
   }
@@ -724,11 +937,11 @@ export class AnalysisSession {
 
 export const STAGE_LABELS: Record<ScanStage, string> = {
   calibrating_exposure: 'Acquiring signal',
-  identifying_structures: 'Extracting local features',
-  mapping_patterns: 'Analyzing structure',
-  sampling_colour: 'Sampling tonal field',
-  verifying_consistency: 'Verifying evidence',
-  analysis_complete: 'Analysis complete',
+  identifying_structures: 'Tracing the vintage',
+  mapping_patterns: 'Reading the alcohol signature',
+  sampling_colour: 'Sampling festive notes',
+  verifying_consistency: 'Shaken or stirred?',
+  analysis_complete: 'Profile ready — pour carefully',
 };
 
 export const GUIDANCE_LABELS: Record<Exclude<GuidanceHint, null>, string> = {

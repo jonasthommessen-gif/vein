@@ -94,55 +94,96 @@ export function radarFromScores(scores: ProfileScores): RadarValues {
   };
 }
 
+/** Party-funny vampire dining verdict — fictional, never medical. */
 function verdictText(
   desirability: number,
   rarity: number,
+  consistency: number,
 ): { verdict: string; descriptor: string } {
   let verdict: string;
-  if (desirability >= 85) verdict = 'A remarkably refined selection.';
-  else if (desirability >= 65) verdict = 'Balanced and easy to appreciate.';
-  else verdict = 'An acquired taste, with character.';
+  if (desirability >= 85) {
+    verdict = 'VIP bottle service energy. This vintage has been… celebrated.';
+  } else if (desirability >= 65) {
+    verdict = 'Solid party pour — alcohol signature: suspiciously festive.';
+  } else if (consistency < 50) {
+    verdict = 'Shaken, not stirred. Restless night, questionable decisions.';
+  } else {
+    verdict = 'An acquired taste — like the third cocktail you didn’t need.';
+  }
 
   let descriptor: string;
-  if (rarity >= 80) descriptor = 'Distinctive structure. Worth remembering.';
-  else if (rarity >= 50) descriptor = 'A familiar profile with subtle variation.';
-  else descriptor = 'An understated, classic profile.';
+  if (rarity >= 80) {
+    descriptor = 'Rare enough to brag about. Worth remembering. Barely.';
+  } else if (rarity >= 50) {
+    descriptor = 'Familiar profile with a hint of last call.';
+  } else {
+    descriptor = 'House red energy. Reliable. Mildly dangerous after midnight.';
+  }
 
   return { verdict, descriptor };
 }
 
-function assessmentText(scores: ProfileScores, tone: ToneLabel): string {
+function assessmentText(scores: ProfileScores, tone: ToneLabel, fv: FeatureVector): string {
   if (scores.desirability >= 85 && scores.rarity >= 70) {
-    return `Unusually composed ${tone} profile — distinct structure, quiet sweetness, exceptional aftertaste.`;
+    return `Bottle-service ${tone} profile — distinct structure, quiet chaos, exceptional after-party aftertaste.`;
+  }
+  if (fv.C >= 0.65 && fv.chromaticWarmth > 0.55) {
+    return `Warm ${tone} reading with notes of last night’s tequila and questionable optimism.`;
+  }
+  if (scores.consistency < 50) {
+    return `Restless ${tone} character — shaken, not stirred. Pair with bad decisions after midnight.`;
   }
   if (scores.desirability >= 70) {
-    return `A composed ${tone} reading with clear structure and a measured finish.`;
+    return `A composed ${tone} pour with clear structure and a finish that still wants one more round.`;
   }
   if (scores.complexity >= 70) {
-    return `Intricate ${tone} character; rewards a patient, unhurried approach.`;
+    return `Intricate ${tone} character; rewards a patient vampire and a messy guest list.`;
   }
-  return `A reserved ${tone} profile — understated, serviceable, without unnecessary drama.`;
+  return `A reserved ${tone} profile — understated, serviceable, still somehow at the party.`;
 }
 
-/** Dry vampire tasting notes from deterministic rules. */
+/** Party tasting notes from deterministic score rules. */
 function tastingNotesFrom(scores: ProfileScores, fv: FeatureVector, tone: ToneLabel): string[] {
   const notes: string[] = [];
 
-  if (scores.richness >= 80) notes.push('Full-bodied with a lasting finish.');
-  else if (scores.richness >= 55) notes.push('Medium body; clean mid-palate.');
-  else notes.push('Light, restrained, quietly elegant.');
+  if (scores.richness >= 80) {
+    notes.push('Full-bodied with a lasting finish — like the night itself.');
+  } else if (scores.richness >= 55) {
+    notes.push('Medium body; clean mid-palate. Hangover pending.');
+  } else {
+    notes.push('Light, restrained, quietly dangerous.');
+  }
 
-  if (tone === 'cool') notes.push('A cool mineral edge. Best appreciated after dusk.');
-  else if (tone === 'warm') notes.push('Soft warmth on the finish. Suits formal occasions.');
-  else notes.push('Neutral temperament. Low drama; excellent for formal occasions.');
+  // High warmth / colour → cocktail jokes
+  if (fv.C >= 0.6 && fv.chromaticWarmth >= 0.55) {
+    notes.push('Notes of last night’s tequila. Alcohol signature: suspiciously festive.');
+  } else if (tone === 'warm') {
+    notes.push('Soft warmth on the finish — punch-bowl adjacent.');
+  } else if (tone === 'cool') {
+    notes.push('A cool mineral edge. Best after the ice melts.');
+  } else {
+    notes.push('Neutral temperament. Low drama until someone suggests shots.');
+  }
 
-  if (scores.rarity >= 75) notes.push('An uncommon arrangement. A patient acquisition is advised.');
-  else if (scores.consistency >= 70) notes.push('Remarkably steady. Ideal for unhurried evenings.');
-  else notes.push('Allow the selection to settle before serving.');
+  if (scores.rarity >= 75) {
+    notes.push('An uncommon arrangement. A patient (and festive) acquisition is advised.');
+  } else if (scores.consistency < 55) {
+    notes.push('Shaken, not stirred. Restless night written all over it.');
+  } else if (scores.consistency >= 70) {
+    notes.push('Remarkably steady — somehow still standing at last call.');
+  } else {
+    notes.push('Allow the selection to settle… or don’t. Party rules apply.');
+  }
 
-  if (scores.nocturnal >= 70) notes.push('Particularly suited to nocturnal dining.');
-  else if (fv.S < 0.55) notes.push('Best approached with patience.');
-  else notes.push('A clean finish. Best after dusk.');
+  if (scores.desirability >= 80) {
+    notes.push('Pair with bad decisions after midnight. VIP bottle service optional.');
+  } else if (scores.nocturnal >= 70) {
+    notes.push('Particularly suited to nocturnal dining and regrettable karaoke.');
+  } else if (fv.S < 0.55) {
+    notes.push('This vintage has been… celebrated. Approach with snacks.');
+  } else {
+    notes.push('A clean finish. Best after dusk, worse before brunch.');
+  }
 
   return [...new Set(notes)].slice(0, 4);
 }
@@ -150,19 +191,31 @@ function tastingNotesFrom(scores: ProfileScores, fv: FeatureVector, tone: ToneLa
 function recommendationsFrom(scores: ProfileScores, fv: FeatureVector): string[] {
   const out: string[] = [];
 
-  if (fv.S >= 0.75) out.push('Ideal for unhurried evenings.');
-  else out.push('Best approached with patience.');
+  if (scores.desirability >= 80) {
+    out.push('Pair with bad decisions after midnight.');
+  } else if (fv.S >= 0.75) {
+    out.push('Ideal for unhurried evenings that somehow become chaotic.');
+  } else {
+    out.push('Best approached with patience — and water.');
+  }
 
-  if (scores.richness >= 80) out.push('Full-bodied with a lasting finish.');
-  else out.push('Light, restrained, quietly elegant.');
+  if (fv.C >= 0.6 && fv.chromaticWarmth >= 0.5) {
+    out.push('Notes of last night’s tequila. Serve chilled, spirits optional.');
+  } else if (scores.richness >= 80) {
+    out.push('Full-bodied with a lasting finish. Hangover not included.');
+  } else {
+    out.push('Light pour. Still somehow ends up on the dance floor.');
+  }
 
-  if (scores.desirability >= 80) out.push('An excellent choice for unhurried evenings.');
-  else if (scores.desirability >= 60) out.push('Suitable for formal dining.');
-  else out.push('Better suited to casual feeding.');
-
-  if (scores.rarity >= 70) out.push('A patient acquisition is advised.');
-  else if (scores.consistency < 55) out.push('Allow the selection to settle.');
-  else out.push('Best after dusk.');
+  if (scores.desirability >= 80) {
+    out.push('VIP bottle service energy. This vintage has been… celebrated.');
+  } else if (scores.consistency < 55) {
+    out.push('Shaken, not stirred. Restless night — settle before serving.');
+  } else if (scores.rarity >= 70) {
+    out.push('A patient (and festive) acquisition is advised.');
+  } else {
+    out.push('Alcohol signature: suspiciously festive. Best after dusk.');
+  }
 
   const unique = [...new Set(out)];
   return unique.slice(0, 3);
@@ -173,18 +226,24 @@ function whyText(measured: FeatureScores, scores: ProfileScores, tone: ToneLabel
   const pat = measured.patternDetail;
   return (
     `Visual contrast places vein visibility near ${vis} with pattern detail around ${pat}. ` +
-    `Interpreted as a ${tone} palate with desirability ${scores.desirability}/100 — a fictional reading from visible image characteristics, not a medical assessment.`
+    `Interpreted as a ${tone} palate with desirability ${scores.desirability}/100 — ` +
+    `a fictional party reading from visible image characteristics, not a medical assessment. ` +
+    `Any “alcohol signature” is pure vampire dining theatre.`
   );
 }
 
-function palateNotes(scores: ProfileScores, tone: ToneLabel): Record<string, string> {
+function palateNotes(scores: ProfileScores, tone: ToneLabel, fv: FeatureVector): Record<string, string> {
+  const festive =
+    fv.C >= 0.55
+      ? 'colour signature reads suspiciously festive (fictional).'
+      : 'quiet house-pour energy (fictional).';
   return {
-    Richness: `${scores.richness} — derived from visibility and colour signature strength.`,
-    Aftertaste: `${scores.aftertaste} — from pattern persistence and chromatic reading.`,
-    Rarity: `${scores.rarity} — weighted toward local pattern complexity.`,
-    Finish: `${scores.finish} — consistency and visibility combined.`,
-    Temperament: `${scores.temperament} — balance of elegance and frame steadiness.`,
-    Occasion: `${scores.occasion} — composite of desirability, rarity, and elegance.`,
+    Richness: `${scores.richness} — derived from visibility and colour strength. ${festive}`,
+    Aftertaste: `${scores.aftertaste} — from pattern persistence; may include notes of last night’s tequila (joke).`,
+    Rarity: `${scores.rarity} — weighted toward local pattern complexity, not actual exclusivity.`,
+    Finish: `${scores.finish} — consistency and visibility combined. Hangover optional.`,
+    Temperament: `${scores.temperament} — balance of elegance and frame steadiness (shaken vs stirred).`,
+    Occasion: `${scores.occasion} — composite of desirability, rarity, and elegance. After-midnight friendly.`,
     Tone: `${tone} — normalized channel ratios after luminance compensation (not blood chemistry).`,
   };
 }
@@ -202,12 +261,16 @@ export function buildProfile(opts: {
   const scores = scoresFromVector(fv);
   const tone = toneLabel(fv.chromaticWarmth, fv.C);
   const classCode = classFromFeatures(fv.V, fv.P, fv.C);
-  const { verdict, descriptor } = verdictText(scores.desirability, scores.rarity);
+  const { verdict, descriptor } = verdictText(
+    scores.desirability,
+    scores.rarity,
+    scores.consistency,
+  );
   const recommendations = recommendationsFrom(scores, fv);
   const measured = { ...opts.measured };
   const radar = radarFromScores(scores);
   const tastingNotes = tastingNotesFrom(scores, fv, tone);
-  const assessment = assessmentText(scores, tone);
+  const assessment = assessmentText(scores, tone, fv);
 
   return {
     id: opts.id ?? `vp_${Date.now().toString(36)}_${Math.floor(fv.V * 1000)}`,
@@ -225,7 +288,7 @@ export function buildProfile(opts: {
     tastingNotes,
     why: whyText(measured, scores, tone),
     recommendations,
-    palateNotes: palateNotes(scores, tone),
+    palateNotes: palateNotes(scores, tone, fv),
     limitedConfidence: Boolean(opts.limitedConfidence),
     schemaVersion: SCHEMA_VERSION,
     measured,
