@@ -33,7 +33,7 @@ function sampleToDisplay(
 
 /**
  * Computational visualization overlay — organic ice/cyan ridge polylines,
- * junction nodes, math HUD. Driven only by measured session geometry.
+ * junction nodes + angle ticks, math HUD near metric bars (right).
  */
 export function VeinOverlay({ geometry, computation, analyzing, complete }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -55,7 +55,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
     const reduced =
       typeof window !== 'undefined' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    // Throttle ~18fps for iPhone Safari
     const minInterval = reduced ? 80 : 55;
 
     const draw = (now: number) => {
@@ -88,7 +87,7 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
       const comp = compRef.current;
       const phase = comp?.phase ?? (isDone ? 'completion' : 'acquisition');
 
-      // —— Math viz (compact, over-camera, no cards) ——
+      // Math HUD — right side under metric-bar cluster (NOT under % / stage on left)
       if (comp && (phase === 'analysis' || phase === 'verification' || phase === 'completion')) {
         drawMathHud(ctx, comp, dw, phase === 'completion' ? 0.55 : 0.85);
       } else if (comp && phase === 'acquisition') {
@@ -103,7 +102,7 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
 
       if (!hasRidge || !geom) {
         if (comp?.signature && phase === 'completion') {
-          drawSignature(ctx, comp.signature, dw, dh, 0.7);
+          drawSignature(ctx, comp.signature, dw, 0.7);
         }
         return;
       }
@@ -135,7 +134,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
               (quiet ? 0.42 : 0.58) * pl.strength * pl.stability * bloomScale;
             const trunk = 0.9 + pl.weight * 2.4;
 
-            // Soft subsurface bloom pass
             ctx.beginPath();
             for (let i = 0; i < pl.points.length; i++) {
               const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
@@ -146,7 +144,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
             ctx.lineWidth = trunk * 2.6;
             ctx.stroke();
 
-            // Core ice stroke
             ctx.beginPath();
             for (let i = 0; i < pl.points.length; i++) {
               const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
@@ -157,7 +154,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
             ctx.lineWidth = trunk;
             ctx.stroke();
 
-            // Thin white centreline
             ctx.beginPath();
             for (let i = 0; i < pl.points.length; i++) {
               const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
@@ -169,7 +165,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
             ctx.stroke();
           }
         } else {
-          // Fallback: short segments if polylines not yet available
           for (const s of geom.segments) {
             if (quiet && s.strength < 0.35) continue;
             const a = sampleToDisplay(s.x0, s.y0, sw, sh, dw, dh);
@@ -192,7 +187,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
         }
       }
 
-      // Junction / branch nodes — white cores with soft ice bloom
       const junctions = geom.junctions ?? [];
       if (showPaths && junctions.length > 0) {
         for (const j of junctions) {
@@ -210,9 +204,26 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
           ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
           ctx.arc(x, y, r * 0.85, 0, Math.PI * 2);
           ctx.fill();
+
+          // Short angle / orientation ticks at junctions & branch points
+          const angles = j.angles ?? [];
+          if (angles.length > 0) {
+            const tick = j.degree >= 3 ? 8 : 5.5;
+            ctx.strokeStyle = `rgba(255, 255, 255, ${a * 0.7})`;
+            ctx.lineWidth = 0.9;
+            for (const ang of angles) {
+              ctx.beginPath();
+              ctx.moveTo(x + Math.cos(ang) * (r + 1), y + Math.sin(ang) * (r + 1));
+              ctx.lineTo(
+                x + Math.cos(ang) * (r + tick),
+                y + Math.sin(ang) * (r + tick),
+              );
+              ctx.stroke();
+            }
+          }
         }
       } else if (showPaths) {
-        // Sparse accepted ridge samples as soft nodes (no silhouette chain look)
+        // Sparse accepted interior samples only — never silhouette chain look
         for (const p of geom.points) {
           if (!p.accepted && p.strength < 0.5) continue;
           if (quiet && !p.accepted) continue;
@@ -229,7 +240,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
         }
       }
 
-      // —— Computational detail labels ——
       if (
         comp &&
         (phase === 'analysis' || phase === 'verification') &&
@@ -253,7 +263,7 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
       ctx.restore();
 
       if (comp?.signature && (phase === 'verification' || phase === 'completion')) {
-        drawSignature(ctx, comp.signature, dw, dh, phase === 'completion' ? 0.75 : 0.45);
+        drawSignature(ctx, comp.signature, dw, phase === 'completion' ? 0.75 : 0.45);
       }
     };
 
@@ -291,21 +301,26 @@ function drawCalibration(
   ctx.restore();
 }
 
+/** Compact math HUD aligned with floating metric bars (top-right cluster). */
 function drawMathHud(
   ctx: CanvasRenderingContext2D,
   comp: ComputationViz,
   dw: number,
   alpha: number,
 ) {
-  const x0 = 16;
-  const y0 = 72;
+  const marginX = 16;
+  const hw = 52;
+  // Right edge of metric column (~158px wide metrics + margin)
+  const x0 = dw - marginX - Math.max(hw, 72);
+  // Sit just under the five metric rows (top safe + brand + metrics stack)
+  const y0 = 56 + 5 * 36 + 8;
+
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.globalCompositeOperation = 'source-over';
 
   const hist = comp.luminanceHist;
-  const hw = 52;
-  const hh = 18;
+  const hh = 16;
   ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
   for (let i = 0; i < hist.length; i++) {
     const bw = hw / hist.length;
@@ -316,7 +331,7 @@ function drawMathHud(
   ctx.lineWidth = 0.6;
   ctx.strokeRect(x0, y0, hw, hh);
 
-  const histY = y0 + hh + 10;
+  const histY = y0 + hh + 8;
   const spark = comp.stabilityHistory;
   if (spark.length > 1) {
     ctx.beginPath();
@@ -324,7 +339,7 @@ function drawMathHud(
     ctx.lineWidth = 0.9;
     for (let i = 0; i < spark.length; i++) {
       const sx = x0 + (i / (spark.length - 1)) * hw;
-      const sy = histY + 14 - spark[i] * 12;
+      const sy = histY + 12 - spark[i] * 10;
       if (i === 0) ctx.moveTo(sx, sy);
       else ctx.lineTo(sx, sy);
     }
@@ -332,13 +347,13 @@ function drawMathHud(
   }
 
   ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillStyle = 'rgba(230, 236, 240, 0.7)';
-  const ty = histY + 28;
+  ctx.fillStyle = 'rgba(230, 236, 240, 0.65)';
+  ctx.textAlign = 'left';
+  const ty = histY + 24;
   ctx.fillText(`ρ ${(comp.density * 100).toFixed(0)}`, x0, ty);
-  ctx.fillText(`κ ${(comp.contrast * 100).toFixed(0)}`, x0 + 36, ty);
-  ctx.fillText(`ĉ ${(comp.confidence * 100).toFixed(0)}`, x0, ty + 12);
+  ctx.fillText(`κ ${(comp.contrast * 100).toFixed(0)}`, x0 + 34, ty);
+  ctx.fillText(`ĉ ${(comp.confidence * 100).toFixed(0)}`, x0, ty + 11);
 
-  void dw;
   ctx.restore();
 }
 
@@ -346,15 +361,17 @@ function drawSignature(
   ctx: CanvasRenderingContext2D,
   signature: string,
   dw: number,
-  dh: number,
   alpha: number,
 ) {
+  const marginX = 16;
+  // Same right cluster as math HUD / metric bars — never under left % copy
+  const x = dw - marginX;
+  const y = 56 + 5 * 36 + 8 + 16 + 8 + 24 + 22;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillStyle = 'rgba(216, 234, 244, 0.75)';
-  ctx.textAlign = 'left';
-  ctx.fillText(signature, 16, dh - 110);
+  ctx.fillStyle = 'rgba(216, 234, 244, 0.72)';
+  ctx.textAlign = 'right';
+  ctx.fillText(signature, x, y);
   ctx.restore();
-  void dw;
 }

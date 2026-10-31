@@ -15,6 +15,7 @@ import type {
   VeinGeometry,
   VeinProfile,
 } from '../types';
+import { bakeVeinOverlayOntoStill } from '../vision/bakeOverlay';
 import { FrameSampler } from '../vision/frameSampler';
 import { AnalysisSession } from '../vision/session';
 
@@ -159,7 +160,16 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
             captureImage = stillUrl;
           }
 
-          void nextSubjectLabel().then((label) => {
+          void (async () => {
+            // Bake ice vein geometry onto the results still (profile/details photo)
+            if (captureImage && result.geometry) {
+              captureImage = await bakeVeinOverlayOntoStill(
+                captureImage,
+                result.geometry,
+                { quality: 0.82, type: 'image/jpeg' },
+              );
+            }
+            const label = await nextSubjectLabel();
             const profile = buildProfile({
               featureVector: result.featureVector,
               measured,
@@ -172,7 +182,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
             setProgress(100);
             setStage('analysis_complete');
             setPhase('COMPLETE');
-          });
+          })();
         }
       });
     };

@@ -1,12 +1,12 @@
 import type { RadarValues } from '../types';
 
-const AXES: { key: keyof RadarValues; label: string }[] = [
-  { key: 'clarity', label: 'Clarity' },
-  { key: 'complexity', label: 'Complexity' },
-  { key: 'tonalRichness', label: 'Tonal richness' },
-  { key: 'consistency', label: 'Consistency' },
-  { key: 'rarity', label: 'Rarity' },
-  { key: 'nocturnal', label: 'Nocturnal suitability' },
+const AXES: { key: keyof RadarValues; lines: string[] }[] = [
+  { key: 'clarity', lines: ['Clarity'] },
+  { key: 'complexity', lines: ['Complexity'] },
+  { key: 'tonalRichness', lines: ['Tonal', 'richness'] },
+  { key: 'consistency', lines: ['Consistency'] },
+  { key: 'rarity', lines: ['Rarity'] },
+  { key: 'nocturnal', lines: ['Nocturnal'] },
 ];
 
 interface Props {
@@ -17,9 +17,12 @@ interface Props {
 
 /** Minimal monochrome six-axis radar — never Oxygen/Iron/medical labels. */
 export function RadarChart({ values, size = 280, className }: Props) {
-  const cx = size / 2;
-  const cy = size / 2;
-  const radius = size * 0.32;
+  // Extra viewBox padding so wrapped labels never clip on ~390px phones
+  const pad = Math.round(size * 0.14);
+  const vb = size + pad * 2;
+  const cx = vb / 2;
+  const cy = vb / 2;
+  const radius = size * 0.30;
   const n = AXES.length;
 
   const pointAt = (i: number, value01: number) => {
@@ -33,10 +36,12 @@ export function RadarChart({ values, size = 280, className }: Props) {
 
   const labelAt = (i: number) => {
     const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
-    const r = radius + size * 0.12;
+    // Pull labels inward so they stay inside the SVG on narrow screens
+    const r = radius + size * 0.095;
     return {
       x: cx + Math.cos(angle) * r,
       y: cy + Math.sin(angle) * r,
+      angle,
     };
   };
 
@@ -48,11 +53,10 @@ export function RadarChart({ values, size = 280, className }: Props) {
       className={className ?? 'radar-chart'}
       width={size}
       height={size}
-      viewBox={`0 0 ${size} ${size}`}
+      viewBox={`0 0 ${vb} ${vb}`}
       role="img"
       aria-label="Profile radar: Clarity, Complexity, Tonal richness, Consistency, Rarity, Nocturnal suitability"
     >
-      {/* Axis spokes */}
       {AXES.map((_, i) => {
         const tip = pointAt(i, 1);
         return (
@@ -68,7 +72,6 @@ export function RadarChart({ values, size = 280, className }: Props) {
         );
       })}
 
-      {/* Filled polygon */}
       <polygon
         points={polygon}
         fill="rgba(23, 26, 28, 0.08)"
@@ -77,29 +80,33 @@ export function RadarChart({ values, size = 280, className }: Props) {
         strokeLinejoin="round"
       />
 
-      {/* Value dots */}
       {pts.map((p, i) => (
         <circle key={`dot-${i}`} cx={p.x} cy={p.y} r={3.5} fill="#171A1C" />
       ))}
 
-      {/* Labels */}
       {AXES.map((a, i) => {
         const lp = labelAt(i);
         const anchor =
-          Math.abs(lp.x - cx) < 4 ? 'middle' : lp.x < cx ? 'end' : 'start';
+          Math.abs(lp.x - cx) < 6 ? 'middle' : lp.x < cx ? 'end' : 'start';
+        const lineH = 11;
+        const blockH = a.lines.length * lineH;
+        const baseY = lp.y - blockH / 2 + lineH * 0.75;
         return (
           <text
             key={a.key}
             x={lp.x}
-            y={lp.y}
+            y={baseY}
             textAnchor={anchor}
-            dominantBaseline="middle"
             fill="#667077"
-            fontSize={11}
+            fontSize={10}
             fontFamily="inherit"
             fontWeight={450}
           >
-            {a.label}
+            {a.lines.map((line, li) => (
+              <tspan key={line} x={lp.x} dy={li === 0 ? 0 : lineH}>
+                {line}
+              </tspan>
+            ))}
           </text>
         );
       })}

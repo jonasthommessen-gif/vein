@@ -8,8 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "fixture:check": "vite-node scripts/fixture-pixels.mts",
-    "test:fixture": "vite-node scripts/fixture-pixels.mts"
+    "fixture:check": "vite-node scripts/fixture-pixels.mts && vite-node scripts/fixture-geometry.mts",
+    "fixture:geometry": "vite-node scripts/fixture-geometry.mts",
+    "test:fixture": "vite-node scripts/fixture-pixels.mts && vite-node scripts/fixture-geometry.mts"
   },
   "dependencies": {
     "lucide-react": "^1.66.0",

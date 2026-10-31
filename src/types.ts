@@ -81,6 +81,8 @@ export interface VeinJunction {
   strength: number;
   /** Number of incident ridge branches (3+ = true junction). */
   degree: number;
+  /** Local branch angles (radians) for short orientation ticks. */
+  angles?: number[];
 }
 
 export interface VeinGeometry {
