@@ -19,11 +19,23 @@ export type ScanStage =
   | 'verifying_consistency'
   | 'analysis_complete';
 
+/** Visual computation phases driving overlay systems (mapped from ScanStage). */
+export type ComputationPhase =
+  | 'acquisition'
+  | 'extraction'
+  | 'analysis'
+  | 'verification'
+  | 'completion';
+
 export interface TargetSuitability {
   exposure: number;
   chromaVariance: number;
   localContrast: number;
   lineStructure: number;
+  /** 0–1: share of geometry that is organic/clustered vs axis-aligned silhouettes. */
+  organicScore: number;
+  /** 0–1: penalty for screen/edge-like regularity. */
+  edgeRegularity: number;
   score: number;
   suitable: boolean;
 }
@@ -32,6 +44,12 @@ export interface VeinPoint {
   x: number;
   y: number;
   strength: number;
+  /** Ridge tangent angle in radians (sample space). */
+  orientation: number;
+  /** Local dark-ridge contrast 0–1. */
+  localContrast: number;
+  /** True when multi-frame evidence accepted this feature. */
+  accepted: boolean;
 }
 
 export interface VeinSegment {
@@ -40,6 +58,8 @@ export interface VeinSegment {
   x1: number;
   y1: number;
   strength: number;
+  /** Euclidean length in sample pixels — kept short for local clusters. */
+  length: number;
 }
 
 export interface VeinGeometry {
@@ -51,6 +71,39 @@ export interface VeinGeometry {
   roiY: number;
   roiW: number;
   roiH: number;
+  /** Compact feature signature derived from accepted geometry. */
+  signature: string;
+}
+
+export interface ComputationSample {
+  x: number;
+  y: number;
+  /** Short numeric label from real local measurement. */
+  label: string;
+  /** Remaining life 0–1 for ephemeral markers. */
+  life: number;
+}
+
+/** Measured computation state for overlay math viz (separate from rendering). */
+export interface ComputationViz {
+  phase: ComputationPhase;
+  luminanceHist: number[];
+  stabilityHistory: number[];
+  density: number;
+  contrast: number;
+  confidence: number;
+  samples: ComputationSample[];
+  signature: string;
+  validAnalysisMs: number;
+  evidenceSettled: FeatureSettleFlags;
+}
+
+export interface FeatureSettleFlags {
+  veinVisibility: boolean;
+  patternDetail: boolean;
+  colourSignature: boolean;
+  frameStability: boolean;
+  imageConfidence: boolean;
 }
 
 export interface RawMetrics {
@@ -62,6 +115,9 @@ export interface RawMetrics {
   chromaticWarmth: number;
   chromaticStrength: number;
   edgeEnergy: number;
+  organicScore: number;
+  edgeRegularity: number;
+  luminanceHist: number[];
   exposureOk: boolean;
   underExposed: boolean;
   overExposed: boolean;

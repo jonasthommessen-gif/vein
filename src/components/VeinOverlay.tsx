@@ -1,42 +1,13 @@
 import { useEffect, useRef } from 'react';
-import type { ScanStage, VeinGeometry } from '../types';
-
-export type OverlayReveal = 'A' | 'B' | 'C' | 'D' | 'hidden';
+import type { ComputationViz, VeinGeometry } from '../types';
 
 interface Props {
   geometry: VeinGeometry | null;
-  stage: ScanStage;
+  computation: ComputationViz | null;
   analyzing: boolean;
   complete: boolean;
-  /** Video or still element for object-fit:cover mapping (optional — uses sample→viewport cover). */
-  videoEl?: HTMLVideoElement | HTMLImageElement | null;
 }
 
-function stageToReveal(stage: ScanStage, analyzing: boolean, complete: boolean): OverlayReveal {
-  if (complete) return 'D';
-  if (!analyzing) return 'hidden';
-  switch (stage) {
-    case 'calibrating_exposure':
-      return 'hidden';
-    case 'identifying_structures':
-      return 'A';
-    case 'mapping_patterns':
-      return 'B';
-    case 'sampling_colour':
-      return 'C';
-    case 'verifying_consistency':
-      return 'C';
-    case 'analysis_complete':
-      return 'D';
-    default:
-      return 'hidden';
-  }
-}
-
-/**
- * Map sample-space coords (cover-cropped analysis frame) onto the displayed
- * object-fit:cover video element.
- */
 function sampleToDisplay(
   sx: number,
   sy: number,
@@ -47,14 +18,10 @@ function sampleToDisplay(
 ): { x: number; y: number } {
   const sampleAspect = sampleW / sampleH;
   const displayAspect = displayW / displayH;
-
-  // Analysis frame already cover-crops source → display also cover-crops same source.
-  // Map sample coords as if sample fills the cover rectangle of the display.
   let scale: number;
   let ox = 0;
   let oy = 0;
   if (displayAspect > sampleAspect) {
-    // Display wider: sample height maps to display height; width overflows
     scale = displayH / sampleH;
     ox = (displayW - sampleW * scale) / 2;
   } else {
@@ -64,35 +31,43 @@ function sampleToDisplay(
   return { x: sx * scale + ox, y: sy * scale + oy };
 }
 
-export function VeinOverlay({ geometry, stage, analyzing, complete, videoEl }: Props) {
+/**
+ * Computational visualization overlay — spatial clusters, math readouts,
+ * and ephemeral detail. Driven only by measured session data.
+ */
+export function VeinOverlay({ geometry, computation, analyzing, complete }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const reveal = stageToReveal(stage, analyzing, complete);
-  const animRef = useRef(0);
-  const startRef = useRef(0);
-  const prevReveal = useRef<OverlayReveal>('hidden');
+  const geomRef = useRef(geometry);
+  const compRef = useRef(computation);
+  const stateRef = useRef({ analyzing, complete });
 
-  useEffect(() => {
-    if (reveal !== prevReveal.current) {
-      startRef.current = performance.now();
-      prevReveal.current = reveal;
-    }
-  }, [reveal]);
+  geomRef.current = geometry;
+  compRef.current = computation;
+  stateRef.current = { analyzing, complete };
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     let cancelled = false;
+    let raf = 0;
+    let lastDraw = 0;
     const reduced =
       typeof window !== 'undefined' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // Throttle ~18fps for iPhone Safari
+    const minInterval = reduced ? 80 : 55;
 
     const draw = (now: number) => {
       if (cancelled) return;
+      raf = requestAnimationFrame(draw);
+      if (now - lastDraw < minInterval) return;
+      lastDraw = now;
+
       const parent = canvas.parentElement;
       const dw = parent?.clientWidth ?? window.innerWidth;
       const dh = parent?.clientHeight ?? window.innerHeight;
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const dpr = Math.min(1.75, window.devicePixelRatio || 1);
 
       if (canvas.width !== Math.floor(dw * dpr) || canvas.height !== Math.floor(dh * dpr)) {
         canvas.width = Math.floor(dw * dpr);
@@ -106,147 +81,234 @@ export function VeinOverlay({ geometry, stage, analyzing, complete, videoEl }: P
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, dw, dh);
 
-      if (reveal === 'hidden' || !geometry || geometry.points.length === 0) {
-        animRef.current = requestAnimationFrame(draw);
+      const { analyzing: isAn, complete: isDone } = stateRef.current;
+      if (!isAn && !isDone) return;
+
+      const geom = geomRef.current;
+      const comp = compRef.current;
+      const phase = comp?.phase ?? (isDone ? 'completion' : 'acquisition');
+
+      // —— B. Math viz (compact, over-camera, no cards) ——
+      if (comp && (phase === 'analysis' || phase === 'verification' || phase === 'completion')) {
+        drawMathHud(ctx, comp, dw, phase === 'completion' ? 0.55 : 0.85);
+      } else if (comp && phase === 'acquisition') {
+        drawCalibration(ctx, dw, dh, comp, 0.5);
+      }
+
+      if (!geom || geom.points.length === 0) {
+        if (comp?.signature && phase === 'completion') {
+          drawSignature(ctx, comp.signature, dw, dh, 0.7);
+        }
         return;
       }
 
-      const elapsed = reduced ? 2000 : now - startRef.current;
-      const sw = geometry.sampleWidth || 320;
-      const sh = geometry.sampleHeight || 240;
+      const sw = geom.sampleWidth || 320;
+      const sh = geom.sampleHeight || 240;
+      const ice = '216, 234, 244';
 
-      // Prefer mapping via video element size when available (same cover math)
-      void videoEl;
-
-      const ice = getComputedStyle(document.documentElement)
-        .getPropertyValue('--trace-ice')
-        .trim() || '#D8EAF4';
-
-      const points = geometry.points;
-      const segments = geometry.segments;
-
-      // Stage reveal progress
-      const tA = Math.min(1, elapsed / 400);
-      const tB = Math.min(1, Math.max(0, (elapsed - 200) / 600));
-      const tC = Math.min(1, Math.max(0, (elapsed - 100) / 500));
-      const tD = Math.min(1, elapsed / 450);
-
-      const strengthThresh =
-        reveal === 'C' || reveal === 'D' ? 0.38 : 0.22;
-
-      // Soft bloom (restrained)
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
 
-      if (reveal === 'A' || reveal === 'B' || reveal === 'C' || reveal === 'D') {
-        const pointCount =
-          reveal === 'A'
-            ? Math.ceil(points.length * tA)
-            : points.length;
+      // —— A. Spatial features (subtle local clusters) ——
+      const showSegments =
+        phase === 'extraction' ||
+        phase === 'analysis' ||
+        phase === 'verification' ||
+        phase === 'completion';
+      const showOri =
+        phase === 'extraction' || phase === 'analysis' || phase === 'verification';
+      const quiet = phase === 'verification' || phase === 'completion';
 
-        for (let i = 0; i < pointCount; i++) {
-          const p = points[i];
-          if (reveal === 'C' && p.strength < strengthThresh) {
-            // Fade unstable
-            const fade = 0.15 * (1 - tC);
-            if (fade < 0.05) continue;
-            const { x, y } = sampleToDisplay(p.x, p.y, sw, sh, dw, dh);
-            ctx.beginPath();
-            ctx.fillStyle = `rgba(216, 234, 244, ${fade})`;
-            ctx.arc(x, y, 1.2, 0, Math.PI * 2);
-            ctx.fill();
-            continue;
-          }
-          if (reveal === 'D' && p.strength < strengthThresh) continue;
-
-          const { x, y } = sampleToDisplay(p.x, p.y, sw, sh, dw, dh);
-          const alpha =
-            reveal === 'D'
-              ? 0.55 * tD * p.strength
-              : reveal === 'C'
-                ? 0.5 * p.strength
-                : 0.35 + 0.35 * p.strength * (reveal === 'A' ? tA : 1);
-
-          // Tiny bloom
-          ctx.beginPath();
-          ctx.fillStyle = `rgba(216, 234, 244, ${alpha * 0.25})`;
-          ctx.arc(x, y, 2.4, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.beginPath();
-          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
-          ctx.arc(x, y, 1.1, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      if (reveal === 'B' || reveal === 'C' || reveal === 'D') {
-        const segLimit =
-          reveal === 'B' ? Math.ceil(segments.length * tB) : segments.length;
-
+      if (showSegments) {
         ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        for (let i = 0; i < segLimit; i++) {
-          const s = segments[i];
-          if ((reveal === 'C' || reveal === 'D') && s.strength < strengthThresh) {
-            if (reveal === 'C') {
-              const a = sampleToDisplay(s.x0, s.y0, sw, sh, dw, dh);
-              const b = sampleToDisplay(s.x1, s.y1, sw, sh, dw, dh);
-              ctx.beginPath();
-              ctx.strokeStyle = `rgba(216, 234, 244, ${0.08 * (1 - tC)})`;
-              ctx.lineWidth = 1;
-              ctx.moveTo(a.x, a.y);
-              ctx.lineTo(b.x, b.y);
-              ctx.stroke();
-            }
-            continue;
-          }
-
+        for (const s of geom.segments) {
+          if (s.length > 10) continue;
+          if (quiet && s.strength < 0.4) continue;
           const a = sampleToDisplay(s.x0, s.y0, sw, sh, dw, dh);
           const b = sampleToDisplay(s.x1, s.y1, sw, sh, dw, dh);
-          const alpha =
-            reveal === 'D'
-              ? 0.5 * tD * s.strength
-              : reveal === 'B'
-                ? 0.4 * s.strength * tB
-                : 0.45 * s.strength;
-
-          // Bloom stroke
+          const alpha = quiet ? 0.28 * s.strength : 0.38 * s.strength;
           ctx.beginPath();
-          ctx.strokeStyle = ice.replace(')', `, ${alpha * 0.35})`).startsWith('#')
-            ? `rgba(216, 234, 244, ${alpha * 0.3})`
-            : `rgba(216, 234, 244, ${alpha * 0.3})`;
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.35})`;
+          ctx.lineWidth = 1.6;
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(b.x, b.y);
           ctx.stroke();
-
           ctx.beginPath();
           ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
-          ctx.lineWidth = 1.15;
+          ctx.lineWidth = 0.9;
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+
+      for (const p of geom.points) {
+        if (quiet && !p.accepted && p.strength < 0.42) continue;
+        const { x, y } = sampleToDisplay(p.x, p.y, sw, sh, dw, dh);
+        const alpha =
+          phase === 'acquisition'
+            ? 0.25 + 0.3 * p.strength
+            : phase === 'completion'
+              ? 0.4 * p.strength
+              : p.accepted
+                ? 0.55 * p.strength
+                : 0.32 * p.strength;
+
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(${ice}, ${alpha * 0.2})`;
+        ctx.arc(x, y, quiet ? 1.6 : 2.1, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+        ctx.arc(x, y, p.accepted ? 1.15 : 0.9, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Orientation ticks near features
+        if (showOri && p.orientation != null) {
+          const len = 4.5;
+          const tx = Math.cos(p.orientation) * len;
+          const ty = Math.sin(p.orientation) * len;
+          ctx.beginPath();
+          ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.55})`;
+          ctx.lineWidth = 0.7;
+          ctx.moveTo(x - tx, y - ty);
+          ctx.lineTo(x + tx, y + ty);
+          ctx.stroke();
+        }
+      }
+
+      // —— D. Computational detail ——
+      if (
+        comp &&
+        (phase === 'analysis' || phase === 'verification') &&
+        comp.samples.length > 0
+      ) {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        for (const s of comp.samples) {
+          const { x, y } = sampleToDisplay(s.x, s.y, sw, sh, dw, dh);
+          const a = 0.55 * s.life;
+          ctx.fillStyle = `rgba(220, 230, 236, ${a})`;
+          ctx.fillText(s.label, x + 6, y - 4);
+          ctx.beginPath();
+          ctx.strokeStyle = `rgba(${ice}, ${a * 0.7})`;
+          ctx.lineWidth = 0.8;
+          ctx.arc(x, y, 3.2, 0, Math.PI * 2);
           ctx.stroke();
         }
       }
 
       ctx.restore();
-      animRef.current = requestAnimationFrame(draw);
+
+      if (comp?.signature && (phase === 'verification' || phase === 'completion')) {
+        drawSignature(ctx, comp.signature, dw, dh, phase === 'completion' ? 0.75 : 0.45);
+      }
     };
 
-    animRef.current = requestAnimationFrame(draw);
+    raf = requestAnimationFrame(draw);
     return () => {
       cancelled = true;
-      cancelAnimationFrame(animRef.current);
+      cancelAnimationFrame(raf);
     };
-  }, [geometry, reveal, videoEl]);
+  }, []);
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className="vein-overlay"
-      aria-hidden
-    />
-  );
+  return <canvas ref={canvasRef} className="vein-overlay" aria-hidden />;
+}
+
+function drawCalibration(
+  ctx: CanvasRenderingContext2D,
+  dw: number,
+  dh: number,
+  comp: ComputationViz,
+  alpha: number,
+) {
+  const cx = dw * 0.5;
+  const cy = dh * 0.48;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = 'rgba(216, 234, 244, 0.35)';
+  ctx.lineWidth = 0.8;
+  // Sparse calibration ticks — not a scan rectangle
+  for (let i = 0; i < 4; i++) {
+    const ang = (i / 4) * Math.PI * 2 + comp.contrast * 2;
+    const r = 28 + i * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(ang) * (r - 4), cy + Math.sin(ang) * (r - 4));
+    ctx.lineTo(cx + Math.cos(ang) * (r + 4), cy + Math.sin(ang) * (r + 4));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawMathHud(
+  ctx: CanvasRenderingContext2D,
+  comp: ComputationViz,
+  dw: number,
+  alpha: number,
+) {
+  const x0 = 16;
+  const y0 = 72;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // Tiny luminance histogram
+  const hist = comp.luminanceHist;
+  const hw = 52;
+  const hh = 18;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+  for (let i = 0; i < hist.length; i++) {
+    const bw = hw / hist.length;
+    const bh = Math.max(1, hist[i] * hh);
+    ctx.fillRect(x0 + i * bw, y0 + hh - bh, bw * 0.75, bh);
+  }
+  ctx.strokeStyle = 'rgba(216, 234, 244, 0.25)';
+  ctx.lineWidth = 0.6;
+  ctx.strokeRect(x0, y0, hw, hh);
+
+  // Stabilization sparkline
+  const histY = y0 + hh + 10;
+  const spark = comp.stabilityHistory;
+  if (spark.length > 1) {
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(216, 234, 244, 0.55)';
+    ctx.lineWidth = 0.9;
+    for (let i = 0; i < spark.length; i++) {
+      const sx = x0 + (i / (spark.length - 1)) * hw;
+      const sy = histY + 14 - spark[i] * 12;
+      if (i === 0) ctx.moveTo(sx, sy);
+      else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+  }
+
+  // Tiny density / contrast / confidence readouts
+  ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = 'rgba(230, 236, 240, 0.7)';
+  const ty = histY + 28;
+  ctx.fillText(`ρ ${(comp.density * 100).toFixed(0)}`, x0, ty);
+  ctx.fillText(`κ ${(comp.contrast * 100).toFixed(0)}`, x0 + 36, ty);
+  ctx.fillText(`ĉ ${(comp.confidence * 100).toFixed(0)}`, x0, ty + 12);
+
+  // Right-edge subtle mark so HUD doesn't collide with bars
+  void dw;
+  ctx.restore();
+}
+
+function drawSignature(
+  ctx: CanvasRenderingContext2D,
+  signature: string,
+  dw: number,
+  dh: number,
+  alpha: number,
+) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = 'rgba(216, 234, 244, 0.75)';
+  ctx.textAlign = 'left';
+  ctx.fillText(signature, 16, dh - 110);
+  ctx.restore();
+  void dw;
 }

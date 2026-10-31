@@ -94,7 +94,6 @@ export function extractGrayscaleRoi(
   let sumB = 0;
   let n = 0;
 
-  // Chromatic axes without skin-hue cutoffs: red-green and yellow-blue proxies
   let sumRg = 0;
   let sumYb = 0;
   let sumRgSq = 0;
@@ -124,7 +123,6 @@ export function extractGrayscaleRoi(
   const meanYb = n ? sumYb / n : 0;
   const varRg = n ? Math.max(0, sumRgSq / n - meanRg * meanRg) : 0;
   const varYb = n ? Math.max(0, sumYbSq / n - meanYb * meanYb) : 0;
-  // Typical skin/arm chroma variance is modest; screens/blank walls skew differently
   const chromaVariance = clamp01(Math.sqrt(varRg + varYb) / 0.08);
 
   return {
@@ -146,9 +144,46 @@ interface Candidate {
   strength: number;
   gx: number;
   gy: number;
+  localContrast: number;
+  orientation: number;
 }
 
-/** Sparse dark-line candidates → points + short segments in full sample space. */
+function emptyGeometry(
+  sampleWidth: number,
+  sampleHeight: number,
+  roiX = 0,
+  roiY = 0,
+  roiW = 0,
+  roiH = 0,
+): VeinGeometry {
+  return {
+    points: [],
+    segments: [],
+    sampleWidth,
+    sampleHeight,
+    roiX,
+    roiY,
+    roiW,
+    roiH,
+    signature: '——',
+  };
+}
+
+function buildSignature(points: VeinPoint[], segments: VeinSegment[]): string {
+  if (points.length === 0) return '——';
+  let h = points.length * 17 + segments.length * 31;
+  for (let i = 0; i < Math.min(8, points.length); i++) {
+    const p = points[i];
+    h = (h * 33 + Math.round(p.x * 3) + Math.round(p.y * 5) + Math.round(p.strength * 100)) >>> 0;
+  }
+  const hex = (h >>> 0).toString(16).toUpperCase().padStart(6, '0').slice(-6);
+  return `Σ${hex.slice(0, 3)}·${hex.slice(3)}`;
+}
+
+/**
+ * Sparse dark-ridge candidates → local clusters + short segments only.
+ * Rejects long silhouette / axis-aligned edge chains typical of screens & desks.
+ */
 function extractVeinGeometry(
   gray: Float32Array,
   w: number,
@@ -158,51 +193,92 @@ function extractVeinGeometry(
   sampleWidth: number,
   sampleHeight: number,
   blur4: Float32Array,
-): VeinGeometry {
-  const empty: VeinGeometry = {
-    points: [],
-    segments: [],
-    sampleWidth,
-    sampleHeight,
-    roiX,
-    roiY,
-    roiW: w,
-    roiH: h,
-  };
-
-  if (w < 8 || h < 8) return empty;
+): { geometry: VeinGeometry; organicScore: number; edgeRegularity: number } {
+  const empty = emptyGeometry(sampleWidth, sampleHeight, roiX, roiY, w, h);
+  if (w < 8 || h < 8) {
+    return { geometry: empty, organicScore: 0, edgeRegularity: 1 };
+  }
 
   const candidates: Candidate[] = [];
   const step = 2;
 
-  for (let y = 2; y < h - 2; y += step) {
-    for (let x = 2; x < w - 2; x += step) {
+  for (let y = 3; y < h - 3; y += step) {
+    for (let x = 3; x < w - 3; x += step) {
       const i = y * w + x;
       const local = blur4[i];
       const delta = local - gray[i];
-      if (delta < 5) continue;
+      // Dark ridge relative to neighbourhood — screens often fail organic soft ridges
+      if (delta < 6) continue;
 
       const gx = gray[i + 1] - gray[i - 1];
       const gy = gray[i + w] - gray[i - w];
+      const mag = Math.sqrt(gx * gx + gy * gy) + 1e-3;
       const ax = Math.abs(gx);
       const ay = Math.abs(gy);
       const elongation = Math.abs(ax - ay) / (ax + ay + 1e-3);
-      // Require elongated dark structure — generic edges alone do not qualify
-      if (elongation < 0.22) continue;
+      if (elongation < 0.28) continue;
 
-      const strength = clamp01(delta / 36) * (0.35 + 0.65 * elongation);
-      if (strength < 0.28) continue;
+      // Soft ridge: avoid razor-sharp single-pixel edges (laptop bezels / paper)
+      const sharp =
+        Math.abs(gray[i] - gray[i - 1]) +
+        Math.abs(gray[i] - gray[i + 1]) +
+        Math.abs(gray[i] - gray[i - w]) +
+        Math.abs(gray[i] - gray[i + w]);
+      if (sharp > 110) continue;
 
-      candidates.push({ x, y, strength, gx, gy });
+      const strength = clamp01(delta / 34) * (0.3 + 0.7 * elongation);
+      if (strength < 0.32) continue;
+
+      // Tangent ≈ perpendicular to gradient
+      const orientation = Math.atan2(gx / mag, -gy / mag);
+      candidates.push({
+        x,
+        y,
+        strength,
+        gx,
+        gy,
+        localContrast: clamp01(delta / 40),
+        orientation,
+      });
     }
   }
 
-  if (candidates.length === 0) return empty;
+  if (candidates.length === 0) {
+    return { geometry: empty, organicScore: 0, edgeRegularity: 0.2 };
+  }
 
-  // Sort strongest first; sparsify by minimum distance
   candidates.sort((a, b) => b.strength - a.strength);
+
+  // Cardinal (exact H/V) concentration — screens/notebooks, not diagonal vein fields
+  let cardinalHits = 0;
+  let extentX = 0;
+  let extentY = 0;
+  let minX = w;
+  let maxX = 0;
+  let minY = h;
+  let maxY = 0;
+  const sampleN = Math.min(60, candidates.length);
+  for (const c of candidates.slice(0, sampleN)) {
+    const ang = ((c.orientation % Math.PI) + Math.PI) % Math.PI;
+    const toHoriz = Math.min(ang, Math.PI - ang);
+    const toVert = Math.abs(ang - Math.PI / 2);
+    // Tighter than before — only near-perfect cardinals count
+    if (toHoriz < 0.12 || toVert < 0.12) cardinalHits += 1;
+    if (c.x < minX) minX = c.x;
+    if (c.x > maxX) maxX = c.x;
+    if (c.y < minY) minY = c.y;
+    if (c.y > maxY) maxY = c.y;
+  }
+  extentX = (maxX - minX) / Math.max(1, w);
+  extentY = (maxY - minY) / Math.max(1, h);
+  const cardinalShare = cardinalHits / sampleN;
+  // Long span + cardinal orientation ⇒ silhouette/edge chain (laptop, paper)
+  const spanFactor = Math.max(extentX, extentY) > 0.55 ? 1.2 : 0.75;
+  const edgeRegularity = clamp01(cardinalShare * spanFactor * 1.1);
+
+  // Sparsify
   const kept: Candidate[] = [];
-  const minDistSq = 5 * 5;
+  const minDistSq = 6 * 6;
   for (const c of candidates) {
     let ok = true;
     for (const k of kept) {
@@ -215,39 +291,75 @@ function extractVeinGeometry(
     }
     if (ok) {
       kept.push(c);
-      if (kept.length >= 48) break;
+      if (kept.length >= 40) break;
     }
   }
 
-  const points: VeinPoint[] = kept.map((c) => ({
+  // Require local cluster membership (2+ neighbours within radius) — kills long lonely edges
+  const clusterR = 16;
+  const clusterR2 = clusterR * clusterR;
+  const clustered: Candidate[] = [];
+  for (let i = 0; i < kept.length; i++) {
+    const a = kept[i];
+    let neighbors = 0;
+    for (let j = 0; j < kept.length; j++) {
+      if (i === j) continue;
+      const dx = a.x - kept[j].x;
+      const dy = a.y - kept[j].y;
+      if (dx * dx + dy * dy <= clusterR2) neighbors += 1;
+    }
+    if (neighbors >= 1) clustered.push(a);
+  }
+
+  // Drop only near-perfect cardinal points when silhouette regularity is high
+  const filtered = clustered.filter((c) => {
+    if (edgeRegularity < 0.55) return true;
+    const ang = ((c.orientation % Math.PI) + Math.PI) % Math.PI;
+    const toHoriz = Math.min(ang, Math.PI - ang);
+    const toVert = Math.abs(ang - Math.PI / 2);
+    return toHoriz > 0.14 && toVert > 0.14;
+  });
+
+  const finalPts = (filtered.length >= 3 ? filtered : clustered).slice(0, 28);
+
+  const points: VeinPoint[] = finalPts.map((c) => ({
     x: roiX + c.x,
     y: roiY + c.y,
     strength: c.strength,
+    orientation: c.orientation,
+    localContrast: c.localContrast,
+    accepted: false,
   }));
 
-  // Short segments along the weaker gradient axis (ridge direction)
+  // Short local segments only (max ~9px) — no silhouette chains
   const segments: VeinSegment[] = [];
-  const linkDist = 14;
+  const linkDist = 9;
   const linkDistSq = linkDist * linkDist;
+  const used = new Set<string>();
 
-  for (let i = 0; i < kept.length; i++) {
-    const a = kept[i];
+  for (let i = 0; i < finalPts.length; i++) {
+    const a = finalPts[i];
     let bestJ = -1;
     let bestD = linkDistSq;
     const mag = Math.sqrt(a.gx * a.gx + a.gy * a.gy) + 1e-3;
-    // Tangent ≈ perpendicular to gradient
     const tx = -a.gy / mag;
     const ty = a.gx / mag;
 
-    for (let j = i + 1; j < kept.length; j++) {
-      const b = kept[j];
+    for (let j = i + 1; j < finalPts.length; j++) {
+      const b = finalPts[j];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const d2 = dx * dx + dy * dy;
       if (d2 > linkDistSq || d2 < 4) continue;
       const dist = Math.sqrt(d2);
       const align = Math.abs((dx / dist) * tx + (dy / dist) * ty);
-      if (align < 0.55) continue;
+      if (align < 0.62) continue;
+      // Reject near-perfect axis-aligned longish links
+      const ang = Math.atan2(dy, dx);
+      const aa = ((ang % Math.PI) + Math.PI) % Math.PI;
+      const toH = Math.min(aa, Math.PI - aa);
+      const toV = Math.abs(aa - Math.PI / 2);
+      if ((toH < 0.15 || toV < 0.15) && dist > 6) continue;
       if (d2 < bestD) {
         bestD = d2;
         bestJ = j;
@@ -255,19 +367,69 @@ function extractVeinGeometry(
     }
 
     if (bestJ >= 0) {
-      const b = kept[bestJ];
+      const b = finalPts[bestJ];
+      const key = `${i}-${bestJ}`;
+      if (used.has(key)) continue;
+      used.add(key);
+      const length = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+      if (length > 10) continue;
       segments.push({
         x0: roiX + a.x,
         y0: roiY + a.y,
         x1: roiX + b.x,
         y1: roiY + b.y,
         strength: Math.min(a.strength, b.strength),
+        length,
       });
-      if (segments.length >= 36) break;
+      if (segments.length >= 22) break;
     }
   }
 
-  return {
+  // Organic score: cluster density + orientation diversity − axis regularity
+  const orientBins = [0, 0, 0, 0];
+  for (const p of finalPts) {
+    const ang = ((p.orientation % Math.PI) + Math.PI) % Math.PI;
+    const bin = Math.min(3, Math.floor((ang / Math.PI) * 4));
+    orientBins[bin] += 1;
+  }
+  const totalO = finalPts.length || 1;
+  let entropy = 0;
+  for (const b of orientBins) {
+    if (b === 0) continue;
+    const p = b / totalO;
+    entropy -= p * Math.log2(p);
+  }
+  const orientDiversity = clamp01(entropy / 2);
+  const clusterRatio = kept.length ? finalPts.length / Math.max(1, kept.length) : 0;
+  const densityScore = clamp01(finalPts.length / 14);
+
+  // Collinear span: long thin chains (paper edges) vs 2-D local vein clusters
+  let pMinX = w;
+  let pMaxX = 0;
+  let pMinY = h;
+  let pMaxY = 0;
+  for (const p of finalPts) {
+    if (p.x < pMinX) pMinX = p.x;
+    if (p.x > pMaxX) pMaxX = p.x;
+    if (p.y < pMinY) pMinY = p.y;
+    if (p.y > pMaxY) pMaxY = p.y;
+  }
+  const spanX = finalPts.length ? (pMaxX - pMinX) / Math.max(1, w) : 0;
+  const spanY = finalPts.length ? (pMaxY - pMinY) / Math.max(1, h) : 0;
+  const thinSpan =
+    Math.max(spanX, spanY) > 0.42 &&
+    Math.max(spanX, spanY) / (Math.min(spanX, spanY) + 0.04) > 3.2;
+
+  // Veins often share one dominant direction — do not punish that heavily
+  const organicScore = clamp01(
+    clusterRatio * 0.38 +
+      densityScore * 0.28 +
+      orientDiversity * 0.18 +
+      (1 - edgeRegularity) * 0.16 -
+      (thinSpan ? 0.35 : 0),
+  );
+
+  const geometry: VeinGeometry = {
     points,
     segments,
     sampleWidth,
@@ -276,7 +438,22 @@ function extractVeinGeometry(
     roiY,
     roiW: w,
     roiH: h,
+    signature: buildSignature(points, segments),
   };
+
+  return { geometry, organicScore, edgeRegularity };
+}
+
+function buildLuminanceHist(gray: Float32Array, bins = 12): number[] {
+  const hist = new Array(bins).fill(0);
+  if (gray.length === 0) return hist;
+  for (let i = 0; i < gray.length; i++) {
+    const b = Math.min(bins - 1, Math.floor((gray[i] / 255) * bins));
+    hist[b] += 1;
+  }
+  let max = 1;
+  for (const v of hist) if (v > max) max = v;
+  return hist.map((v) => v / max);
 }
 
 function buildTargetSuitability(
@@ -284,25 +461,49 @@ function buildTargetSuitability(
   chromaVariance: number,
   localContrast: number,
   lineStructure: number,
+  organicScore: number,
+  edgeRegularity: number,
+  edgeEnergy: number,
   exposureOk: boolean,
+  geometryPoints: number,
 ): TargetSuitability {
-  // Composite heavily weighted toward line structure — kitchen/screens fail here
+  // Screens/desks: cardinal regularity spanning the frame, or hard edges >> soft ridges
+  const hardEdgeExcess = Math.max(0, edgeEnergy - lineStructure * 1.15);
+  const silhouettePenalty = clamp01(edgeRegularity * 0.5 + hardEdgeExcess * 1.1);
+
   const score = clamp01(
-    exposureScore * 0.2 +
-      chromaVariance * 0.12 +
-      localContrast * 0.18 +
-      lineStructure * 0.5,
+    exposureScore * 0.14 +
+      chromaVariance * 0.1 +
+      localContrast * 0.14 +
+      lineStructure * 0.32 +
+      organicScore * 0.3 -
+      silhouettePenalty * 0.28,
   );
+
+  // Reject silhouettes even if they produce dark lines; allow directional vein fields
+  const looksLikeSilhouette =
+    (edgeRegularity >= 0.7 && organicScore < 0.35) ||
+    (edgeRegularity >= 0.8 && organicScore < 0.5) ||
+    (edgeRegularity >= 0.85 && hardEdgeExcess > 0.05) ||
+    silhouettePenalty >= 0.65 ||
+    organicScore < 0.18;
+
   const suitable =
     exposureOk &&
-    lineStructure >= 0.14 &&
-    localContrast >= 0.07 &&
-    score >= 0.22;
+    lineStructure >= 0.12 &&
+    localContrast >= 0.06 &&
+    organicScore >= 0.22 &&
+    geometryPoints >= 3 &&
+    score >= 0.22 &&
+    !looksLikeSilhouette;
+
   return {
     exposure: exposureScore,
     chromaVariance,
     localContrast,
     lineStructure,
+    organicScore,
+    edgeRegularity,
     score,
     suitable,
   };
@@ -313,16 +514,7 @@ export function computeRawMetrics(
   width: number,
   height: number,
 ): RawMetrics {
-  const emptyGeom: VeinGeometry = {
-    points: [],
-    segments: [],
-    sampleWidth: width,
-    sampleHeight: height,
-    roiX: 0,
-    roiY: 0,
-    roiW: 0,
-    roiH: 0,
-  };
+  const emptyGeom = emptyGeometry(width, height);
 
   const { gray, w, h, meanR, meanG, meanB, chromaVariance, x0, y0 } =
     extractGrayscaleRoi(data, width, height, 0.6);
@@ -337,10 +529,13 @@ export function computeRawMetrics(
       chromaticWarmth: 0.5,
       chromaticStrength: 0,
       edgeEnergy: 0,
+      organicScore: 0,
+      edgeRegularity: 0,
+      luminanceHist: new Array(12).fill(0),
       exposureOk: false,
       underExposed: true,
       overExposed: false,
-      targetSuitability: buildTargetSuitability(0, 0, 0, 0, false),
+      targetSuitability: buildTargetSuitability(0, 0, 0, 0, 0, 0, 0, false, 0),
       geometry: emptyGeom,
     };
   }
@@ -367,8 +562,9 @@ export function computeRawMetrics(
   let darkLineSum = 0;
   let darkLineCount = 0;
 
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
+  // Sample every other pixel for iPhone Safari throttle
+  for (let y = 1; y < h - 1; y += 1) {
+    for (let x = 1; x < w - 1; x += 1) {
       const i = y * w + x;
       const diff = Math.abs(blur1[i] - blur4[i]);
       contrastSum += diff;
@@ -380,11 +576,15 @@ export function computeRawMetrics(
 
       const local = blur4[i];
       const delta = local - gray[i];
-      if (delta > 4) {
+      if (delta > 5) {
         const ax = Math.abs(gx);
         const ay = Math.abs(gy);
         const elongation = Math.abs(ax - ay) / (ax + ay + 1e-3);
-        darkLineSum += clamp01(delta / 40) * (0.4 + 0.6 * elongation);
+        // Soft ridge weight — hard edges contribute less to "line structure"
+        const sharp =
+          Math.abs(gray[i] - gray[i - 1]) + Math.abs(gray[i] - gray[i + 1]);
+        const soft = sharp < 90 ? 1 : 0.35;
+        darkLineSum += clamp01(delta / 40) * (0.35 + 0.65 * elongation) * soft;
         darkLineCount++;
       }
     }
@@ -416,7 +616,6 @@ export function computeRawMetrics(
     meanLuminance > 230 || (meanLuminance > 200 && luminanceSpread < 12);
   const exposureOk = !underExposed && !overExposed && luminanceSpread > 6;
 
-  // Peak exposure score near mid-tones with usable spread
   const exposureScore = clamp01(
     exposureOk
       ? 1 - Math.abs(meanLuminance - 120) / 140
@@ -425,15 +624,7 @@ export function computeRawMetrics(
         : 0.4,
   );
 
-  const targetSuitability = buildTargetSuitability(
-    exposureScore,
-    chromaVariance,
-    localContrast,
-    lineStructure,
-    exposureOk,
-  );
-
-  const geometry = extractVeinGeometry(
+  const { geometry, organicScore, edgeRegularity } = extractVeinGeometry(
     gray,
     w,
     h,
@@ -444,6 +635,27 @@ export function computeRawMetrics(
     blur4,
   );
 
+  const targetSuitability = buildTargetSuitability(
+    exposureScore,
+    chromaVariance,
+    localContrast,
+    lineStructure,
+    organicScore,
+    edgeRegularity,
+    edgeEnergy,
+    exposureOk,
+    geometry.points.length,
+  );
+
+  // Hide geometry on silhouette-like scenes; keep sparse clusters on soft targets
+  const gatedGeometry =
+    targetSuitability.suitable ||
+    (organicScore >= 0.22 &&
+      edgeRegularity < 0.72 &&
+      geometry.points.length >= 3)
+      ? geometry
+      : { ...emptyGeometry(width, height, x0, y0, w, h), signature: geometry.signature };
+
   return {
     meanLuminance,
     luminanceSpread,
@@ -453,11 +665,14 @@ export function computeRawMetrics(
     chromaticWarmth: warmth,
     chromaticStrength,
     edgeEnergy,
+    organicScore,
+    edgeRegularity,
+    luminanceHist: buildLuminanceHist(gray, 12),
     exposureOk,
     underExposed,
     overExposed,
     targetSuitability,
-    geometry,
+    geometry: gatedGeometry,
   };
 }
 
@@ -485,9 +700,10 @@ export function metricsToDisplayScores(
   frameStability: number;
   imageConfidence: number;
 } {
-  // Visibility requires line structure — generic contrast alone stays low
-  const visibilityProxy = raw.localContrast * 0.35 + raw.lineStructure * 0.65;
-  const patternProxy = raw.lineStructure * 0.6 + raw.edgeEnergy * 0.4;
+  const visibilityProxy =
+    raw.localContrast * 0.25 + raw.lineStructure * 0.5 + raw.organicScore * 0.25;
+  const patternProxy =
+    raw.lineStructure * 0.45 + raw.organicScore * 0.35 + raw.edgeEnergy * 0.2;
   const veinVisibility = Math.round(100 * displayCurve(visibilityProxy, 3.6));
   const patternDetail = Math.round(100 * displayCurve(patternProxy, 3.5));
   const colourSignature = Math.round(
@@ -501,16 +717,17 @@ export function metricsToDisplayScores(
       : 0.6;
   const suitabilityFactor = raw.targetSuitability.suitable
     ? 1
-    : 0.45 + 0.35 * raw.targetSuitability.score;
+    : 0.4 + 0.3 * raw.targetSuitability.score;
   const imageConfidence = Math.round(
     100 *
       clamp01(
         exposureFactor *
           suitabilityFactor *
-          (0.28 * (veinVisibility / 100) +
-            0.22 * (patternDetail / 100) +
-            0.18 * (colourSignature / 100) +
-            0.32 * stability),
+          (0.26 * (veinVisibility / 100) +
+            0.2 * (patternDetail / 100) +
+            0.16 * (colourSignature / 100) +
+            0.18 * raw.organicScore +
+            0.2 * stability),
       ),
   );
 

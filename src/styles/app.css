@@ -245,6 +245,14 @@
   width: 0%;
 }
 
+.metric-row--settled .metric-value {
+  color: rgba(216, 234, 244, 0.85);
+}
+
+.metric-row--settled .metric-fill {
+  opacity: 0.95;
+}
+
 .scanner-bottom {
   padding: 0 var(--margin-x) calc(var(--safe-bottom) + 20px);
   display: flex;

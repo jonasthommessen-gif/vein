@@ -8,6 +8,7 @@ import { buildProfile } from '../domain/profile';
 import { nextSubjectLabel } from '../persistence/profiles';
 import type {
   AppPhase,
+  ComputationViz,
   FeatureScores,
   GuidanceHint,
   ScanStage,
@@ -43,6 +44,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
   const [showInfo, setShowInfo] = useState(false);
   const [completedProfile, setCompletedProfile] = useState<VeinProfile | null>(null);
   const [geometry, setGeometry] = useState<VeinGeometry | null>(null);
+  const [computation, setComputation] = useState<ComputationViz | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
 
   const cameraRef = useRef<CameraViewHandle>(null);
@@ -67,6 +69,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
     setProgress(0);
     setLimitedEscape(false);
     setGeometry(null);
+    setComputation(null);
     frozenScoresRef.current = null;
     sessionRef.current.reset();
     setPhase('REQUESTING_PERMISSION');
@@ -105,6 +108,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
     setProgress(0);
     setStage('calibrating_exposure');
     setGeometry(null);
+    setComputation(null);
 
     const sampler = samplerRef.current ?? new FrameSampler({ width: 320, height: 240, fps: 5 });
     samplerRef.current = sampler;
@@ -129,6 +133,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
         setGuidance(result.guidance);
         setLimitedEscape(result.limitedEscapeAvailable);
         setGeometry(result.geometry);
+        setComputation(result.computation);
 
         if (result.pausedLowQuality && !result.complete) {
           setPhase('PAUSED_LOW_QUALITY');
@@ -198,6 +203,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
     setScores(EMPTY_SCORES);
     setProgress(0);
     setGeometry(null);
+    setComputation(null);
     // Photo path: show preview then user starts, or auto-ready for start
     setPhase('PREVIEW');
   };
@@ -212,6 +218,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
     setScores(EMPTY_SCORES);
     setProgress(0);
     setGeometry(null);
+    setComputation(null);
     setPhase('PREVIEW');
   };
 
@@ -256,7 +263,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
       {showOverlay && (
         <VeinOverlay
           geometry={geometry}
-          stage={stage}
+          computation={computation}
           analyzing={isAnalyzing}
           complete={phase === 'COMPLETE'}
         />
@@ -280,7 +287,11 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
           </button>
         </header>
 
-        <FloatingMetrics scores={scores} visible={showMetrics} />
+        <FloatingMetrics
+          scores={scores}
+          visible={showMetrics}
+          settled={computation?.evidenceSettled ?? null}
+        />
 
         {phase === 'CAMERA_ERROR' && (
           <div className="scanner-center">

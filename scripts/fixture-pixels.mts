@@ -55,7 +55,7 @@ async function main() {
   function runOnce() {
     const session = new AnalysisSession();
     const frame = { data, width: tw, height: th, timestamp: 0 };
-    const result = session.processStillToCompletion(frame, 50);
+    const result = session.processStillToCompletion(frame, 80);
     const profile = profileFromFeatures(result.featureVector, result.smoothed);
     return {
       scores: profile.scores,
