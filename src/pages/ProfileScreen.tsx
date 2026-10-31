@@ -155,8 +155,8 @@ export function ProfileScreen({ profile, onBack, onOpenDetails, onSaved }: Props
               </li>
             </ul>
             <p className="disclosure" style={{ marginTop: 12 }}>
-              Measured values are image-feature proxies. Desirability, class, and tasting notes are
-              fictional interpretations — not medical biomarkers.
+              Measured values are image-feature proxies. Desirability, class, tasting notes, and any
+              “alcohol signature” jokes are fictional vampire dining theatre — not medical biomarkers.
             </p>
             <button type="button" className="linkish" onClick={onOpenDetails}>
               Open full details →
@@ -165,7 +165,9 @@ export function ProfileScreen({ profile, onBack, onOpenDetails, onSaved }: Props
         ) : null}
       </div>
 
-      <p className="disclosure">Fictional profile · based on visible image characteristics</p>
+      <p className="disclosure">
+        Fictional party profile · based on visible image characteristics · not medical advice
+      </p>
       {shareNote ? <p className="disclosure">{shareNote}</p> : null}
 
       <div className="page-actions">

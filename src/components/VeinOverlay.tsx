@@ -8,6 +8,11 @@ interface Props {
   complete: boolean;
 }
 
+/** Bright ice-blue vein fill — readable on skin / camera, not neon red. */
+const ICE = '126, 200, 240'; // #7EC8F0
+const ICE_HI = '184, 232, 255'; // #B8E8FF
+const NEAR_WHITE = '245, 251, 255'; // #F5FBFF
+
 function sampleToDisplay(
   sx: number,
   sy: number,
@@ -32,8 +37,8 @@ function sampleToDisplay(
 }
 
 /**
- * Computational visualization overlay — organic ice/cyan ridge polylines,
- * junction nodes + angle ticks, math HUD near metric bars (right).
+ * Computational visualization overlay — saturated ice/cyan ridge polylines,
+ * junction markers on stable lines, math HUD near metric bars (right).
  */
 export function VeinOverlay({ geometry, computation, analyzing, complete }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -98,7 +103,7 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
         geom &&
         ((geom.polylines?.length ?? 0) > 0 ||
           geom.segments.length > 0 ||
-          geom.points.length > 0);
+          (geom.junctions?.length ?? 0) > 0);
 
       if (!hasRidge || !geom) {
         if (comp?.signature && phase === 'completion') {
@@ -109,15 +114,14 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
 
       const sw = geom.sampleWidth || 320;
       const sh = geom.sampleHeight || 240;
-      const ice = '216, 234, 244';
 
       const showPaths =
         phase === 'extraction' ||
         phase === 'analysis' ||
         phase === 'verification' ||
         phase === 'completion';
-      const quiet = phase === 'verification' || phase === 'completion';
-      const bloomScale = quiet ? 0.72 : 1;
+      // Keep lines bright through verification/completion — no quiet fade-out
+      const holdBright = phase === 'verification' || phase === 'completion';
 
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
@@ -129,57 +133,57 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
         if (polylines.length > 0) {
           for (const pl of polylines) {
             if (pl.points.length < 2) continue;
-            if (quiet && pl.stability < 0.35) continue;
-            const alpha =
-              (quiet ? 0.42 : 0.58) * pl.strength * pl.stability * bloomScale;
-            const trunk = 0.9 + pl.weight * 2.4;
+            // Only skip truly unverified ephemeral paths late in the scan
+            if (holdBright && pl.stability < 0.4) continue;
 
-            ctx.beginPath();
-            for (let i = 0; i < pl.points.length; i++) {
-              const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
-              if (i === 0) ctx.moveTo(p.x, p.y);
-              else ctx.lineTo(p.x, p.y);
-            }
-            ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.28})`;
-            ctx.lineWidth = trunk * 2.6;
+            const vis = Math.max(0.72, pl.stability);
+            const alpha = (holdBright ? 0.95 : 0.88) * Math.max(0.55, pl.strength) * vis;
+            const trunk = 1.35 + pl.weight * 3.2;
+
+            const path = () => {
+              ctx.beginPath();
+              for (let i = 0; i < pl.points.length; i++) {
+                const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
+                if (i === 0) ctx.moveTo(p.x, p.y);
+                else ctx.lineTo(p.x, p.y);
+              }
+            };
+
+            // Soft bloom halo
+            path();
+            ctx.strokeStyle = `rgba(${ICE}, ${Math.min(0.55, alpha * 0.42)})`;
+            ctx.lineWidth = trunk * 3.4;
             ctx.stroke();
 
-            ctx.beginPath();
-            for (let i = 0; i < pl.points.length; i++) {
-              const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
-              if (i === 0) ctx.moveTo(p.x, p.y);
-              else ctx.lineTo(p.x, p.y);
-            }
-            ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.85})`;
-            ctx.lineWidth = trunk;
+            // Saturated ice-blue body
+            path();
+            ctx.strokeStyle = `rgba(${ICE_HI}, ${Math.min(0.95, alpha * 0.92)})`;
+            ctx.lineWidth = trunk * 1.15;
             ctx.stroke();
 
-            ctx.beginPath();
-            for (let i = 0; i < pl.points.length; i++) {
-              const p = sampleToDisplay(pl.points[i].x, pl.points[i].y, sw, sh, dw, dh);
-              if (i === 0) ctx.moveTo(p.x, p.y);
-              else ctx.lineTo(p.x, p.y);
-            }
-            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.55})`;
-            ctx.lineWidth = Math.max(0.55, trunk * 0.28);
+            // Near-white core — high read on skin
+            path();
+            ctx.strokeStyle = `rgba(${NEAR_WHITE}, ${Math.min(1, alpha)})`;
+            ctx.lineWidth = Math.max(1.1, trunk * 0.42);
             ctx.stroke();
           }
         } else {
+          // Segment fallback only when no polylines yet
           for (const s of geom.segments) {
-            if (quiet && s.strength < 0.35) continue;
+            if (holdBright && s.strength < 0.35) continue;
             const a = sampleToDisplay(s.x0, s.y0, sw, sh, dw, dh);
             const b = sampleToDisplay(s.x1, s.y1, sw, sh, dw, dh);
             const wt = s.weight ?? 0.5;
-            const alpha = (quiet ? 0.32 : 0.48) * s.strength;
+            const alpha = (holdBright ? 0.85 : 0.75) * Math.max(0.5, s.strength);
             ctx.beginPath();
-            ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.4})`;
-            ctx.lineWidth = 1.4 + wt * 1.8;
+            ctx.strokeStyle = `rgba(${ICE}, ${alpha * 0.5})`;
+            ctx.lineWidth = 2.2 + wt * 2.4;
             ctx.moveTo(a.x, a.y);
             ctx.lineTo(b.x, b.y);
             ctx.stroke();
             ctx.beginPath();
-            ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
-            ctx.lineWidth = 0.7 + wt * 0.5;
+            ctx.strokeStyle = `rgba(${NEAR_WHITE}, ${alpha})`;
+            ctx.lineWidth = 1.1 + wt * 0.7;
             ctx.moveTo(a.x, a.y);
             ctx.lineTo(b.x, b.y);
             ctx.stroke();
@@ -187,30 +191,30 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
         }
       }
 
+      // Dots only as junction markers on stable lines — not the primary viz
       const junctions = geom.junctions ?? [];
       if (showPaths && junctions.length > 0) {
         for (const j of junctions) {
-          if (quiet && j.strength < 0.32) continue;
+          if (holdBright && j.strength < 0.28) continue;
           const { x, y } = sampleToDisplay(j.x, j.y, sw, sh, dw, dh);
-          const r = j.degree >= 3 ? 2.4 : 1.6;
-          const a = (quiet ? 0.5 : 0.7) * j.strength * bloomScale;
+          const r = j.degree >= 3 ? 3.1 : 2.2;
+          const a = (holdBright ? 0.9 : 0.8) * Math.max(0.5, j.strength);
 
           ctx.beginPath();
-          ctx.fillStyle = `rgba(${ice}, ${a * 0.35})`;
-          ctx.arc(x, y, r * 2.2, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${ICE}, ${a * 0.45})`;
+          ctx.arc(x, y, r * 2.4, 0, Math.PI * 2);
           ctx.fill();
 
           ctx.beginPath();
-          ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
-          ctx.arc(x, y, r * 0.85, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${NEAR_WHITE}, ${Math.min(1, a)})`;
+          ctx.arc(x, y, r * 0.95, 0, Math.PI * 2);
           ctx.fill();
 
-          // Short angle / orientation ticks at junctions & branch points
           const angles = j.angles ?? [];
           if (angles.length > 0) {
-            const tick = j.degree >= 3 ? 8 : 5.5;
-            ctx.strokeStyle = `rgba(255, 255, 255, ${a * 0.7})`;
-            ctx.lineWidth = 0.9;
+            const tick = j.degree >= 3 ? 9 : 6;
+            ctx.strokeStyle = `rgba(${NEAR_WHITE}, ${a * 0.85})`;
+            ctx.lineWidth = 1.15;
             for (const ang of angles) {
               ctx.beginPath();
               ctx.moveTo(x + Math.cos(ang) * (r + 1), y + Math.sin(ang) * (r + 1));
@@ -221,22 +225,6 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
               ctx.stroke();
             }
           }
-        }
-      } else if (showPaths) {
-        // Sparse accepted interior samples only — never silhouette chain look
-        for (const p of geom.points) {
-          if (!p.accepted && p.strength < 0.5) continue;
-          if (quiet && !p.accepted) continue;
-          const { x, y } = sampleToDisplay(p.x, p.y, sw, sh, dw, dh);
-          const a = 0.4 * p.strength;
-          ctx.beginPath();
-          ctx.fillStyle = `rgba(${ice}, ${a * 0.25})`;
-          ctx.arc(x, y, 1.8, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
-          ctx.arc(x, y, 0.85, 0, Math.PI * 2);
-          ctx.fill();
         }
       }
 
@@ -253,7 +241,7 @@ export function VeinOverlay({ geometry, computation, analyzing, complete }: Prop
           ctx.fillStyle = `rgba(220, 230, 236, ${a})`;
           ctx.fillText(s.label, x + 6, y - 4);
           ctx.beginPath();
-          ctx.strokeStyle = `rgba(${ice}, ${a * 0.7})`;
+          ctx.strokeStyle = `rgba(${ICE_HI}, ${a * 0.7})`;
           ctx.lineWidth = 0.8;
           ctx.arc(x, y, 3.2, 0, Math.PI * 2);
           ctx.stroke();
@@ -288,7 +276,7 @@ function drawCalibration(
   const cy = dh * 0.48;
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = 'rgba(216, 234, 244, 0.35)';
+  ctx.strokeStyle = 'rgba(126, 200, 240, 0.45)';
   ctx.lineWidth = 0.8;
   for (let i = 0; i < 4; i++) {
     const ang = (i / 4) * Math.PI * 2 + comp.contrast * 2;
@@ -327,7 +315,7 @@ function drawMathHud(
     const bh = Math.max(1, hist[i] * hh);
     ctx.fillRect(x0 + i * bw, y0 + hh - bh, bw * 0.75, bh);
   }
-  ctx.strokeStyle = 'rgba(216, 234, 244, 0.25)';
+  ctx.strokeStyle = 'rgba(126, 200, 240, 0.3)';
   ctx.lineWidth = 0.6;
   ctx.strokeRect(x0, y0, hw, hh);
 
@@ -335,7 +323,7 @@ function drawMathHud(
   const spark = comp.stabilityHistory;
   if (spark.length > 1) {
     ctx.beginPath();
-    ctx.strokeStyle = 'rgba(216, 234, 244, 0.55)';
+    ctx.strokeStyle = 'rgba(184, 232, 255, 0.65)';
     ctx.lineWidth = 0.9;
     for (let i = 0; i < spark.length; i++) {
       const sx = x0 + (i / (spark.length - 1)) * hw;
@@ -370,7 +358,7 @@ function drawSignature(
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillStyle = 'rgba(216, 234, 244, 0.72)';
+  ctx.fillStyle = 'rgba(184, 232, 255, 0.8)';
   ctx.textAlign = 'right';
   ctx.fillText(signature, x, y);
   ctx.restore();

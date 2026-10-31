@@ -27,6 +27,10 @@ function sampleToStill(
   return { x: sx * scale + ox, y: sy * scale + oy };
 }
 
+const ICE = '126, 200, 240';
+const ICE_HI = '184, 232, 255';
+const NEAR_WHITE = '245, 251, 255';
+
 function paintGeometry(
   ctx: CanvasRenderingContext2D,
   geometry: VeinGeometry,
@@ -35,7 +39,6 @@ function paintGeometry(
 ): void {
   const sw = geometry.sampleWidth || 320;
   const sh = geometry.sampleHeight || 240;
-  const ice = '180, 220, 236';
 
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
@@ -45,28 +48,31 @@ function paintGeometry(
   const polylines = geometry.polylines ?? [];
   for (const pl of polylines) {
     if (pl.points.length < 2 || pl.stability < 0.28) continue;
-    const alpha = 0.55 * pl.strength * pl.stability;
-    const trunk = 1.1 + pl.weight * 2.6;
+    const vis = Math.max(0.75, pl.stability);
+    const alpha = 0.95 * Math.max(0.55, pl.strength) * vis;
+    const trunk = 1.5 + pl.weight * 3.4;
     const pts = pl.points.map((p) =>
       sampleToStill(p.x, p.y, sw, sh, stillW, stillH),
     );
 
-    ctx.beginPath();
-    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.3})`;
-    ctx.lineWidth = trunk * 2.8;
+    const path = () => {
+      ctx.beginPath();
+      pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+    };
+
+    path();
+    ctx.strokeStyle = `rgba(${ICE}, ${Math.min(0.55, alpha * 0.42)})`;
+    ctx.lineWidth = trunk * 3.6;
     ctx.stroke();
 
-    ctx.beginPath();
-    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.9})`;
-    ctx.lineWidth = trunk;
+    path();
+    ctx.strokeStyle = `rgba(${ICE_HI}, ${Math.min(0.95, alpha * 0.92)})`;
+    ctx.lineWidth = trunk * 1.15;
     ctx.stroke();
 
-    ctx.beginPath();
-    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.55})`;
-    ctx.lineWidth = Math.max(0.6, trunk * 0.28);
+    path();
+    ctx.strokeStyle = `rgba(${NEAR_WHITE}, ${Math.min(1, alpha)})`;
+    ctx.lineWidth = Math.max(1.2, trunk * 0.42);
     ctx.stroke();
   }
 
@@ -75,10 +81,16 @@ function paintGeometry(
       if (s.strength < 0.3) continue;
       const a = sampleToStill(s.x0, s.y0, sw, sh, stillW, stillH);
       const b = sampleToStill(s.x1, s.y1, sw, sh, stillW, stillH);
-      const alpha = 0.45 * s.strength;
+      const alpha = 0.8 * s.strength;
       ctx.beginPath();
-      ctx.strokeStyle = `rgba(${ice}, ${alpha * 0.45})`;
-      ctx.lineWidth = 1.6 + (s.weight ?? 0.5) * 1.8;
+      ctx.strokeStyle = `rgba(${ICE}, ${alpha * 0.5})`;
+      ctx.lineWidth = 2.4 + (s.weight ?? 0.5) * 2.2;
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(${NEAR_WHITE}, ${alpha})`;
+      ctx.lineWidth = 1.2 + (s.weight ?? 0.5) * 0.7;
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
       ctx.stroke();
@@ -88,24 +100,23 @@ function paintGeometry(
   for (const j of geometry.junctions ?? []) {
     if (j.strength < 0.28) continue;
     const { x, y } = sampleToStill(j.x, j.y, sw, sh, stillW, stillH);
-    const r = j.degree >= 3 ? 2.8 : 1.8;
-    const a = 0.65 * j.strength;
+    const r = j.degree >= 3 ? 3.2 : 2.2;
+    const a = 0.9 * Math.max(0.5, j.strength);
 
     ctx.beginPath();
-    ctx.fillStyle = `rgba(${ice}, ${a * 0.35})`;
-    ctx.arc(x, y, r * 2.4, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${ICE}, ${a * 0.45})`;
+    ctx.arc(x, y, r * 2.5, 0, Math.PI * 2);
     ctx.fill();
     ctx.beginPath();
-    ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
-    ctx.arc(x, y, r * 0.9, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${NEAR_WHITE}, ${Math.min(1, a)})`;
+    ctx.arc(x, y, r * 0.95, 0, Math.PI * 2);
     ctx.fill();
 
-    // Angle / orientation ticks
     const angles = j.angles ?? [];
     if (angles.length > 0) {
-      const tick = j.degree >= 3 ? 9 : 6;
-      ctx.strokeStyle = `rgba(255, 255, 255, ${a * 0.75})`;
-      ctx.lineWidth = 1.1;
+      const tick = j.degree >= 3 ? 10 : 6.5;
+      ctx.strokeStyle = `rgba(${NEAR_WHITE}, ${a * 0.85})`;
+      ctx.lineWidth = 1.2;
       for (const ang of angles) {
         ctx.beginPath();
         ctx.moveTo(x + Math.cos(ang) * (r + 1), y + Math.sin(ang) * (r + 1));
@@ -128,7 +139,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Bake vein geometry (ice centrelines + junction ticks) into a capture still.
+ * Bake vein geometry (bright ice centrelines + junction ticks) into a capture still.
  * Returns a JPEG/WebP data URL; falls back to the original src on failure.
  */
 export async function bakeVeinOverlayOntoStill(
