@@ -1,122 +1,79 @@
-import type { VeinProfile } from '../types';
+import type { RadarValues, VeinProfile } from '../types';
 
 const W = 1080;
 const H = 1350;
 
-function roundRect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-): void {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+const RADAR_AXES: { key: keyof RadarValues; label: string }[] = [
+  { key: 'clarity', label: 'Clarity' },
+  { key: 'complexity', label: 'Complexity' },
+  { key: 'tonalRichness', label: 'Tone' },
+  { key: 'consistency', label: 'Consistency' },
+  { key: 'rarity', label: 'Rarity' },
+  { key: 'nocturnal', label: 'Nocturnal' },
+];
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Image load failed'));
+    img.src = src;
+  });
 }
 
-export async function renderProfileCard(profile: VeinProfile): Promise<Blob> {
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas unavailable');
+function drawRadar(
+  ctx: CanvasRenderingContext2D,
+  values: RadarValues,
+  cx: number,
+  cy: number,
+  radius: number,
+): void {
+  const n = RADAR_AXES.length;
+  const pointAt = (i: number, v01: number) => {
+    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    const r = radius * Math.max(0, Math.min(1, v01));
+    return { x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r };
+  };
 
-  // Warm-white background
-  ctx.fillStyle = '#F7F8F7';
-  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#D8DCDB';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < n; i++) {
+    const tip = pointAt(i, 1);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(tip.x, tip.y);
+    ctx.stroke();
+  }
 
-  const margin = 72;
-  let y = 96;
-
-  ctx.fillStyle = '#949CA1';
-  ctx.font = '550 22px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-  ctx.letterSpacing = '0.18em';
-  ctx.fillText('VEIN', margin, y);
-  y += 28;
-  ctx.font = '400 20px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-  ctx.letterSpacing = '0';
-  ctx.fillText('Private analysis', margin, y);
-
-  y += 72;
-  ctx.fillStyle = '#171A1C';
-  ctx.font = '400 64px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-  ctx.fillText(`Vein class ${profile.classCode}`, margin, y);
-
-  y += 48;
-  ctx.fillStyle = '#667077';
-  ctx.font = '400 28px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-  wrapText(ctx, profile.verdict, margin, y, W - margin * 2, 36);
-  y += 56;
-  wrapText(ctx, profile.descriptor, margin, y, W - margin * 2, 36);
-
-  y += 80;
-  ctx.strokeStyle = '#E6E9E8';
-  ctx.lineWidth = 2;
+  const pts = RADAR_AXES.map((a, i) => pointAt(i, (values[a.key] ?? 0) / 100));
   ctx.beginPath();
-  ctx.moveTo(margin, y);
-  ctx.lineTo(W - margin, y);
+  pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(23, 26, 28, 0.08)';
+  ctx.fill();
+  ctx.strokeStyle = '#171A1C';
+  ctx.lineWidth = 2;
   ctx.stroke();
 
-  y += 80;
-  ctx.fillStyle = '#171A1C';
-  ctx.font = '300 96px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-  ctx.fillText(String(profile.scores.desirability), margin, y);
-  ctx.fillStyle = '#949CA1';
-  ctx.font = '500 22px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-  ctx.fillText('Desirability / 100', margin + 160, y - 12);
-
-  y += 72;
-  const bars: [string, number][] = [
-    ['Clarity', profile.scores.clarity],
-    ['Complexity', profile.scores.complexity],
-    ['Tone', profile.scores.tone],
-    ['Consistency', profile.scores.consistency],
-    ['Rarity', profile.scores.rarity],
-  ];
-
-  for (const [label, value] of bars) {
-    ctx.fillStyle = '#667077';
-    ctx.font = '500 24px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-    ctx.fillText(label, margin, y);
+  for (const p of pts) {
+    ctx.beginPath();
     ctx.fillStyle = '#171A1C';
-    ctx.textAlign = 'right';
-    ctx.fillText(String(value), W - margin, y);
-    ctx.textAlign = 'left';
-    y += 18;
-    ctx.fillStyle = '#DEE3E4';
-    roundRect(ctx, margin, y, W - margin * 2, 8, 4);
+    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = '#65737B';
-    const fillW = ((W - margin * 2) * value) / 100;
-    roundRect(ctx, margin, y, Math.max(4, fillW), 8, 4);
-    ctx.fill();
-    y += 48;
   }
 
-  y += 24;
-  ctx.fillStyle = '#949CA1';
-  ctx.font = '400 20px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-  ctx.fillText('VEIN / fictional visual profile', margin, H - 64);
-  ctx.fillText('Based on visible image characteristics', margin, H - 36);
-
-  if (profile.limitedConfidence) {
-    ctx.fillStyle = '#667077';
-    ctx.font = '500 20px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
-    ctx.fillText('Limited confidence reading', margin, H - 96);
+  ctx.fillStyle = '#667077';
+  ctx.font = '450 18px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+  for (let i = 0; i < n; i++) {
+    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    const lx = cx + Math.cos(angle) * (radius + 36);
+    const ly = cy + Math.sin(angle) * (radius + 36);
+    ctx.textAlign = Math.abs(lx - cx) < 8 ? 'center' : lx < cx ? 'right' : 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(RADAR_AXES[i].label, lx, ly);
   }
-
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error('PNG encode failed'));
-    }, 'image/png');
-  });
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
 }
 
 function wrapText(
@@ -144,6 +101,86 @@ function wrapText(
   return yy;
 }
 
+/** Portrait dossier: capture + radar + class + desirability + verdict. */
+export async function renderProfileCard(profile: VeinProfile): Promise<Blob> {
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+
+  ctx.fillStyle = '#F7F8F7';
+  ctx.fillRect(0, 0, W, H);
+
+  const margin = 64;
+  let y = 80;
+
+  ctx.fillStyle = '#949CA1';
+  ctx.font = '550 20px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+  ctx.fillText('VEIN  ·  BLOOD PROFILE', margin, y);
+
+  y += 56;
+  ctx.fillStyle = '#171A1C';
+  ctx.font = '400 56px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+  ctx.fillText(`Vein class ${profile.classCode}`, margin, y);
+
+  y += 40;
+  ctx.fillStyle = '#667077';
+  ctx.font = '400 26px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+  y = wrapText(ctx, profile.verdict, margin, y, W - margin * 2, 34) + 28;
+
+  // Capture still
+  if (profile.captureImage) {
+    try {
+      const img = await loadImage(profile.captureImage);
+      const maxW = W - margin * 2;
+      const maxH = 360;
+      const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+      const iw = Math.round(img.naturalWidth * scale);
+      const ih = Math.round(img.naturalHeight * scale);
+      const ix = margin;
+      ctx.drawImage(img, ix, y, iw, ih);
+      y += ih + 36;
+    } catch {
+      // skip image
+    }
+  }
+
+  // Desirability
+  ctx.fillStyle = '#171A1C';
+  ctx.font = '300 88px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+  ctx.fillText(String(profile.scores.desirability), margin, y + 70);
+  ctx.fillStyle = '#949CA1';
+  ctx.font = '500 20px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+  ctx.fillText('Desirability / 100', margin + 200, y + 54);
+
+  y += 110;
+
+  // Radar
+  const radarY = Math.min(y + 160, H - 280);
+  drawRadar(ctx, profile.radar, W / 2, radarY, 130);
+
+  // Footer
+  ctx.fillStyle = '#949CA1';
+  ctx.font = '400 18px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('VEIN / fictional visual profile', margin, H - 56);
+  ctx.fillText('Based on visible image characteristics', margin, H - 30);
+
+  if (profile.limitedConfidence) {
+    ctx.fillStyle = '#667077';
+    ctx.font = '500 18px -apple-system, BlinkMacSystemFont, Helvetica Neue, sans-serif';
+    ctx.fillText('Limited confidence reading', margin, H - 84);
+  }
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('PNG encode failed'));
+    }, 'image/png');
+  });
+}
+
 export async function shareOrDownload(profile: VeinProfile): Promise<'shared' | 'downloaded'> {
   const blob = await renderProfileCard(profile);
   const file = new File([blob], `vein-${profile.classCode.replace('·', '')}.png`, {
@@ -160,7 +197,6 @@ export async function shareOrDownload(profile: VeinProfile): Promise<'shared' | 
       return 'shared';
     }
   } catch (err) {
-    // User cancel or share failure → fall through to download
     if (err instanceof DOMException && err.name === 'AbortError') return 'downloaded';
   }
 

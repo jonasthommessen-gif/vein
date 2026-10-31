@@ -4,6 +4,8 @@ import type {
   GuidanceHint,
   RawMetrics,
   ScanStage,
+  TargetSuitability,
+  VeinGeometry,
 } from '../types';
 import {
   computeRawMetrics,
@@ -16,7 +18,7 @@ import type { SampledFrame } from './frameSampler';
 const EMA_PREV = 0.75;
 const EMA_CUR = 0.25;
 const WINDOW = 12;
-const LIMITED_MS = 25_000;
+const LIMITED_MS = 28_000;
 
 function clamp(n: number, lo = 0, hi = 100): number {
   return Math.max(lo, Math.min(hi, n));
@@ -37,6 +39,10 @@ export interface AnalysisResult {
   elapsedMs: number;
   validSampleCount: number;
   pausedLowQuality: boolean;
+  targetSuitability: TargetSuitability;
+  geometry: VeinGeometry;
+  /** Progress is frozen while target is unsuitable. */
+  progressPaused: boolean;
 }
 
 interface StageGate {
@@ -61,20 +67,21 @@ export class AnalysisSession {
   private warmthSamples: number[] = [];
   private validCount = 0;
   private exposureOkCount = 0;
-  private contrastOkCount = 0;
+  private structureOkCount = 0;
   private patternStableCount = 0;
   private colourStableCount = 0;
   private consistencyOkCount = 0;
   private gates: StageGate[] = [
-    { id: 'balancing_exposure', weight: 12, met: false },
-    { id: 'assessing_visibility', weight: 18, met: false },
+    { id: 'calibrating_exposure', weight: 12, met: false },
+    { id: 'identifying_structures', weight: 20, met: false },
     { id: 'mapping_patterns', weight: 20, met: false },
-    { id: 'reading_colour', weight: 16, met: false },
-    { id: 'checking_consistency', weight: 18, met: false },
-    { id: 'building_profile', weight: 16, met: false },
+    { id: 'sampling_colour', weight: 16, met: false },
+    { id: 'verifying_consistency', weight: 18, met: false },
+    { id: 'analysis_complete', weight: 14, met: false },
   ];
   private forceLimited = false;
   private finalized: FeatureVector | null = null;
+  private geometryStableFrames = 0;
 
   start(): void {
     this.startedAt = performance.now();
@@ -96,7 +103,7 @@ export class AnalysisSession {
     this.warmthSamples = [];
     this.validCount = 0;
     this.exposureOkCount = 0;
-    this.contrastOkCount = 0;
+    this.structureOkCount = 0;
     this.patternStableCount = 0;
     this.colourStableCount = 0;
     this.consistencyOkCount = 0;
@@ -105,6 +112,7 @@ export class AnalysisSession {
     });
     this.forceLimited = false;
     this.finalized = null;
+    this.geometryStableFrames = 0;
   }
 
   continueWithLimited(): void {
@@ -124,7 +132,6 @@ export class AnalysisSession {
     }
     this.prevGray = gray;
 
-    // Stability: low motion → high score
     const stabilityInstant = Math.max(0, Math.min(1, 1 - motion / 0.08));
     this.stabilitySamples.push(stabilityInstant);
     if (this.stabilitySamples.length > WINDOW) this.stabilitySamples.shift();
@@ -156,8 +163,21 @@ export class AnalysisSession {
       imageConfidence: Math.round(this.smoothed.imageConfidence),
     };
 
+    // Track consecutive frames with real structure (not just edges)
+    if (
+      raw.targetSuitability.suitable &&
+      raw.geometry.points.length >= 4 &&
+      raw.lineStructure >= 0.14
+    ) {
+      this.geometryStableFrames += 1;
+    } else {
+      this.geometryStableFrames = Math.max(0, this.geometryStableFrames - 1);
+    }
+
     const qualityOk = this.frameQualityOk(raw, stability);
-    if (qualityOk) {
+    const progressPaused = !raw.targetSuitability.suitable;
+
+    if (qualityOk && raw.targetSuitability.suitable) {
       this.validCount += 1;
       this.window.push({ ...rounded });
       if (this.window.length > WINDOW) this.window.shift();
@@ -165,22 +185,32 @@ export class AnalysisSession {
     }
 
     const guidance = this.computeGuidance(raw, stability, qualityOk);
-    const pausedLowQuality = !qualityOk && this.validCount < 3 && elapsedMs > 1500;
+    const pausedLowQuality =
+      (!qualityOk || progressPaused) && this.validCount < 3 && elapsedMs > 1500;
     const limitedEscapeAvailable = elapsedMs >= LIMITED_MS && !this.allGatesMet();
 
     let complete = false;
-    if (this.forceLimited || this.allGatesMet()) {
-      this.gates[5].met = true; // building_profile
+    // Never auto-complete confidently without structure — limited escape is explicit
+    if (this.forceLimited) {
+      this.gates[5].met = true;
+      this.finalized = this.buildFeatureVector();
+      complete = true;
+    } else if (this.allGatesMet()) {
+      this.gates[5].met = true;
       this.finalized = this.buildFeatureVector();
       complete = true;
     }
 
-    const progress = complete ? 100 : this.computeProgress();
+    const progress = complete
+      ? 100
+      : progressPaused
+        ? this.computeProgress() // freeze at current (no bonus while paused)
+        : this.computeProgress();
 
     return {
       smoothed: rounded,
       featureVector: this.finalized ?? this.buildFeatureVector(),
-      stage: this.currentStage(),
+      stage: complete ? 'analysis_complete' : this.currentStage(),
       progress,
       guidance,
       complete,
@@ -188,6 +218,9 @@ export class AnalysisSession {
       elapsedMs,
       validSampleCount: this.validCount,
       pausedLowQuality,
+      targetSuitability: raw.targetSuitability,
+      geometry: raw.geometry,
+      progressPaused,
     };
   }
 
@@ -197,14 +230,16 @@ export class AnalysisSession {
     this.start();
     let result: AnalysisResult | null = null;
     for (let i = 0; i < maxFrames; i++) {
-      // Slightly advance timestamp; identical pixels → high stability
       const f = { ...frame, timestamp: performance.now() + i * 200 };
       result = this.processFrame(f);
       if (result.complete) break;
     }
     if (!result?.complete) {
       this.continueWithLimited();
-      result = this.processFrame({ ...frame, timestamp: performance.now() + maxFrames * 200 });
+      result = this.processFrame({
+        ...frame,
+        timestamp: performance.now() + maxFrames * 200,
+      });
     }
     return result!;
   }
@@ -228,12 +263,23 @@ export class AnalysisSession {
     if (raw.exposureOk) this.exposureOkCount += 1;
     if (raw.exposureOk && this.exposureOkCount >= 3) this.gates[0].met = true;
 
-    if (this.gates[0].met && scores.veinVisibility >= 28 && raw.localContrast > 0.06) {
-      this.contrastOkCount += 1;
-      if (this.contrastOkCount >= 4) this.gates[1].met = true;
+    // Identifying visible structures — requires real lineStructure, not contrast alone
+    if (
+      this.gates[0].met &&
+      raw.lineStructure >= 0.14 &&
+      scores.veinVisibility >= 32 &&
+      raw.geometry.points.length >= 3
+    ) {
+      this.structureOkCount += 1;
+      if (this.structureOkCount >= 5) this.gates[1].met = true;
     }
 
-    if (this.gates[1].met && scores.patternDetail >= 22) {
+    if (
+      this.gates[1].met &&
+      scores.patternDetail >= 26 &&
+      raw.lineStructure >= 0.16 &&
+      this.geometryStableFrames >= 3
+    ) {
       this.patternStableCount += 1;
       if (this.patternStableCount >= 5) this.gates[2].met = true;
     }
@@ -245,21 +291,19 @@ export class AnalysisSession {
 
     if (this.gates[3].met && stability >= 0.55 && this.window.length >= 8) {
       this.consistencyOkCount += 1;
-      if (this.consistencyOkCount >= 4) this.gates[4].met = true;
+      if (this.consistencyOkCount >= 5) this.gates[4].met = true;
     }
-
-    // building_profile met only on finalize
   }
 
   private allGatesMet(): boolean {
-    return this.gates.slice(0, 5).every((g) => g.met) && this.validCount >= 10;
+    return this.gates.slice(0, 5).every((g) => g.met) && this.validCount >= 12;
   }
 
   private currentStage(): ScanStage {
     for (const g of this.gates) {
       if (!g.met) return g.id;
     }
-    return 'building_profile';
+    return 'analysis_complete';
   }
 
   private computeProgress(): number {
@@ -269,8 +313,7 @@ export class AnalysisSession {
       total += g.weight;
       if (g.met) done += g.weight;
     }
-    // Partial credit from valid samples toward next gate
-    const sampleBonus = Math.min(8, this.validCount * 0.6);
+    const sampleBonus = Math.min(8, this.validCount * 0.5);
     const pct = Math.round(((done + sampleBonus) / total) * 100);
     return clamp(pct, 0, 99);
   }
@@ -283,9 +326,18 @@ export class AnalysisSession {
     if (raw.underExposed) return 'too_dark';
     if (raw.overExposed) return 'too_bright';
     if (stability < 0.4) return 'hold_steady';
-    if (!raw.exposureOk) return 'better_light';
-    if (qualityOk && this.smoothed.veinVisibility < 20) return 'find_vein';
-    if (!qualityOk) return 'better_light';
+    if (!raw.exposureOk) return 'even_light';
+
+    const suit = raw.targetSuitability;
+    if (!suit.suitable) {
+      if (suit.lineStructure < 0.12) return 'move_closer';
+      if (suit.exposure < 0.45) return 'even_light';
+      if (stability < 0.5) return 'hold_steady';
+      return 'move_closer';
+    }
+
+    if (qualityOk && this.smoothed.veinVisibility < 24) return 'find_vein';
+    if (!qualityOk) return 'even_light';
     return null;
   }
 
@@ -333,18 +385,20 @@ export class AnalysisSession {
 }
 
 export const STAGE_LABELS: Record<ScanStage, string> = {
-  balancing_exposure: 'Balancing exposure',
-  assessing_visibility: 'Assessing vein visibility',
+  calibrating_exposure: 'Calibrating exposure',
+  identifying_structures: 'Identifying visible structures',
   mapping_patterns: 'Mapping local patterns',
-  reading_colour: 'Reading colour signature',
-  checking_consistency: 'Checking consistency',
-  building_profile: 'Building profile',
+  sampling_colour: 'Sampling colour characteristics',
+  verifying_consistency: 'Verifying consistency',
+  analysis_complete: 'Analysis complete',
 };
 
 export const GUIDANCE_LABELS: Record<Exclude<GuidanceHint, null>, string> = {
-  hold_steady: 'Hold steady',
+  hold_steady: 'Hold steady in even light',
   better_light: 'Move into better light',
-  find_vein: 'Find a clearer vein',
+  find_vein: 'Find a visible vein',
+  move_closer: 'Move closer to a visible vein',
+  even_light: 'Hold steady in even light',
   too_dark: 'Too dark — find better light',
   too_bright: 'Too bright — soften the light',
 };
