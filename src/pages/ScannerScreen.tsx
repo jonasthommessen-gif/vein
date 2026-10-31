@@ -160,7 +160,7 @@ export function ScannerScreen({ onOpenLibrary, onProfileReady }: Props) {
 
   const useFixture = () => {
     stopSampling();
-    setStillUrl('/fixtures/forearm_reference.png');
+    setStillUrl(`${import.meta.env.BASE_URL}fixtures/forearm_reference.png`);
     setError(null);
     setCompletedProfile(null);
     sessionRef.current.reset();
