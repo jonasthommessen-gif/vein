@@ -500,12 +500,18 @@
   display: flex;
   justify-content: center;
   margin: 8px 0 32px;
+  padding: 0 4px;
+  overflow: visible;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .radar-chart {
   display: block;
+  width: min(100%, 300px);
   max-width: 100%;
   height: auto;
+  overflow: visible;
 }
 
 .section-label {

@@ -105,7 +105,7 @@ export function ProfileScreen({ profile, onBack, onOpenDetails, onSaved }: Props
       </div>
 
       <div className="radar-wrap">
-        <RadarChart values={profile.radar} size={300} />
+        <RadarChart values={profile.radar} size={280} />
       </div>
 
       <section className="tasting-block">
